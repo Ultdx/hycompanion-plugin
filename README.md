@@ -9,7 +9,7 @@
 
 ## Overview
 
-The Hycompanion Plugin is the client-side bridge that connects a Hytale server to the [Hycompanion Cloud Backend](https://api.hycompanion.dev). It acts as a lightweight relay, forwarding player interactions to the cloud and executing AI-driven actions in the game world.
+The Hycompanion Plugin is the client-side bridge that connects a Hytale server to the [Hycompanion Cloud Backend](https://github.com/Ultdx/hycompanion-backend). It acts as a lightweight relay, forwarding player interactions to the cloud and executing AI-driven actions in the game world.
 
 ## Sponsors
 
@@ -361,7 +361,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 - 🌐 [Website](https://hycompanion.dev)
 - 📊 [Admin Dashboard](https://app.hycompanion.dev)
 - 📚 [Documentation](https://hycompanion.dev/docs)
-- 💬 [Discord](https://discord.gg/hycompanion)
+- 💬 [Discord](https://discord.gg/QnzAUaNUGu)
 
 ---
 
