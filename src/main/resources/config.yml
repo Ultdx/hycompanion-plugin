@@ -1,0 +1,48 @@
+# ========================================
+# Hycompanion Plugin Configuration
+# https://hycompanion.dev
+# Sponsor: https://www.verygames.com (Hytale Server Hosting)
+# ========================================
+
+# Connection Settings
+connection:
+  url: "https://api.hycompanion.dev"
+  
+  # Your server's API key (get this from https://app.hycompanion.dev)
+  # REQUIRED: Replace with your actual API key
+  api_key: "YOUR_SERVER_API_KEY"
+  
+  # Reconnection settings if the connection is lost between Hycompanion server and your server
+  reconnect_enabled: true
+  reconnect_delay_ms: 5000
+
+# Gameplay Settings
+gameplay:
+
+  # Show debug messages in console
+  debug_mode: false
+  
+  # Enable NPC emote animations (depends on NPC models)
+  emotes_enabled: true
+  
+  # Message prefix for NPC messages
+  message_prefix: "[NPC] "
+
+# NPC Settings
+npc:
+  # Directory for cached NPC data (relative to plugin folder)
+  cache_directory: "data/npcs"
+  
+  # Auto-sync NPCs on startup
+  sync_on_startup: true
+
+# Logging
+logging:
+  # Log level: DEBUG, INFO, WARN, ERROR
+  level: "INFO"
+  
+  # Log chat interactions (useful for debugging)
+  log_chat: true
+  
+  # Log action executions
+  log_actions: true

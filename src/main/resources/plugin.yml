@@ -1,0 +1,35 @@
+# Hycompanion Plugin Descriptor
+# Compatible with Hytale Server (Spigot-like API expected)
+
+name: Hycompanion
+version: ${project.version}
+main: dev.hycompanion.plugin.HycompanionEntrypoint
+api-version: '1.0'
+description: AI-powered NPC companion system for Hytale
+author: Hycompanion Team
+website: https://hycompanion.dev
+
+# Commands
+commands:
+  hycompanion:
+    description: Main Hycompanion plugin command
+    usage: /hycompanion <register|status|sync|rediscover|list|spawn|despawn|help>
+    aliases: [hc, hyc]
+
+# Permissions
+permissions:
+  hycompanion.admin:
+    description: Access to all Hycompanion admin commands
+    default: op
+  hycompanion.command.register:
+    description: Permission to use the register command
+    default: op
+  hycompanion.reload:
+    description: Reload Hycompanion configuration
+    default: op
+  hycompanion.status:
+    description: View Hycompanion connection status
+    default: op
+  hycompanion.sync:
+    description: Force NPC sync from backend
+    default: op

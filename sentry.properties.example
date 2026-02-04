@@ -1,0 +1,11 @@
+# Sentry Configuration
+# Copy this file to sentry.properties and fill in your DSN
+# DO NOT commit sentry.properties to version control!
+#
+# Get your DSN from: https://sentry.io/settings/projects/
+
+dsn=https://xxx@xxx.ingest.sentry.io/xxx
+
+# Add data like request headers and IP for users,
+# see https://docs.sentry.io/platforms/java/data-management/data-collected/ for more info
+send-default-pii=true
