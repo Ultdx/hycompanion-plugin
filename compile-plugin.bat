@@ -69,7 +69,7 @@ echo ========================================
 echo   BUILD SUCCESSFUL!
 echo ========================================
 echo.
-echo Output: target\hycompanion-plugin-1.1.0-SNAPSHOT-jar-with-dependencies.jar
+echo Output: target\hycompanion-plugin-1.1.1-SNAPSHOT-jar-with-dependencies.jar
 echo.
 
 :: Check if called from another script (skip pause)

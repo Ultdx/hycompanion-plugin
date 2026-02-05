@@ -49,12 +49,12 @@ import java.util.UUID;
  * when the plugin is loaded by a real Hytale server.
  * 
  * @author Hycompanion Team
- * @version 1.1.0
+ * @version 1.1.1
  */
 public class HycompanionEntrypoint extends JavaPlugin {
 
     private static final HytaleLogger HYTALE_LOGGER = HytaleLogger.forEnclosingClass();
-    public static final String VERSION = "1.1.0-SNAPSHOT";
+    public static final String VERSION = "1.1.1-SNAPSHOT";
 
     // Plugin components
     private PluginLogger logger;
@@ -131,69 +131,73 @@ public class HycompanionEntrypoint extends JavaPlugin {
 
         try {
 
-            Sentry.init(
-                    options -> {
-                        // Configure Sentry DSN via environment variable SENTRY_DSN
-                        // Set SENTRY_DSN environment variable to enable error tracking
-                        options.setEnableExternalConfiguration(true);
-                        String sentryDsn = System.getenv("SENTRY_DSN");
-                        if (sentryDsn != null && !sentryDsn.isEmpty()) {
+            // Configure Sentry DSN via environment variable SENTRY_DSN
+            // Set SENTRY_DSN environment variable to enable error tracking
+            String sentryDsn = System.getenv("SENTRY_DSN");
+            if (sentryDsn != null && !sentryDsn.isEmpty()) {
+                Sentry.init(
+                        options -> {
                             options.setDsn(sentryDsn);
-                            logger.info("Sentry error tracking enabled");
-                        } else {
-                            logger.info("Sentry DSN not configured - error tracking disabled");
-                        }
+                            options.setSendDefaultPii(true);
 
-                        options.setSendDefaultPii(true);
+                            // All events get assigned to the release. See more at
+                            // https://docs.sentry.io/workflow/releases/
+                            // options.setRelease("io.sentry.samples.console@3.0.0+1");
 
-                        // All events get assigned to the release. See more at
-                        // https://docs.sentry.io/workflow/releases/
-                        // options.setRelease("io.sentry.samples.console@3.0.0+1");
+                            // Configure the background worker which sends events to sentry:
+                            // Wait up to 5 seconds before shutdown while there are events to send.
+                            options.setShutdownTimeoutMillis(1000);
 
-                        // Configure the background worker which sends events to sentry:
-                        // Wait up to 5 seconds before shutdown while there are events to send.
-                        options.setShutdownTimeoutMillis(1000);
+                            // Enable SDK logging with Debug level
+                            // options.setDebug(true);
+                            // To change the verbosity, use:
+                            // By default it's DEBUG.
+                            // options.setDiagnosticLevel(SentryLevel.ERROR);
+                            // A good option to have SDK debug log in prod is to use only level ERROR here.
 
-                        // Enable SDK logging with Debug level
-                        // options.setDebug(true);
-                        // To change the verbosity, use:
-                        // By default it's DEBUG.
-                        // options.setDiagnosticLevel(SentryLevel.ERROR);
-                        // A good option to have SDK debug log in prod is to use only level ERROR here.
+                            // Exclude frames from some packages from being "inApp" so are hidden by default
+                            // in Sentry
+                            // UI:
+                            // options.addInAppExclude("org.jboss");
 
-                        // Exclude frames from some packages from being "inApp" so are hidden by default
-                        // in Sentry
-                        // UI:
-                        // options.addInAppExclude("org.jboss");
+                            // Include frames from our package
+                            // options.addInAppInclude("io.sentry.samples");
 
-                        // Include frames from our package
-                        // options.addInAppInclude("io.sentry.samples");
+                            // Performance configuration options
+                            // Set what percentage of traces should be collected
+                            options.setTracesSampleRate(1.0); // set 0.5 to send 50% of traces
 
-                        // Performance configuration options
-                        // Set what percentage of traces should be collected
-                        options.setTracesSampleRate(1.0); // set 0.5 to send 50% of traces
-
-                        // Determine traces sample rate based on the sampling context
-                        // options.setTracesSampler(
-                        // context -> {
-                        // // only 10% of transactions with "/product" prefix will be collected
-                        // if (!context.getTransactionContext().getName().startsWith("/products"))
-                        // {
-                        // return 0.1;
-                        // } else {
-                        // return 0.5;
-                        // }
-                        // });
-                    });
+                            // Determine traces sample rate based on the sampling context
+                            // options.setTracesSampler(
+                            // context -> {
+                            // // only 10% of transactions with "/product" prefix will be collected
+                            // if (!context.getTransactionContext().getName().startsWith("/products"))
+                            // {
+                            // return 0.1;
+                            // } else {
+                            // return 0.5;
+                            // }
+                            // });
+                        });
+                logger.info("Sentry error tracking enabled");
+            } else {
+                logger.info("Sentry DSN not configured - error tracking disabled");
+            }
 
             logger.info("Setup phase - initializing...");
 
             // Set global uncaught exception handler to capture all unhandled exceptions
             Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
                 logger.error("Uncaught exception in thread " + thread.getName() + ": " + throwable.getMessage());
-                Sentry.captureException(throwable);
+                if (sentryDsn != null && !sentryDsn.isEmpty()) {
+                    Sentry.captureException(throwable);
+                }
             });
-            logger.info("Global uncaught exception handler registered with Sentry");
+            if (sentryDsn != null && !sentryDsn.isEmpty()) {
+                logger.info("Global uncaught exception handler registered with Sentry");
+            } else {
+                logger.info("Global uncaught exception handler registered (Sentry disabled)");
+            }
 
             // Get data folder and load config early
             dataFolder = getDataDirectory();
@@ -702,25 +706,39 @@ public class HycompanionEntrypoint extends JavaPlugin {
      */
     private void onPlayerAddedToWorld(AddPlayerToWorldEvent event) {
 
+        // Get Player entity component to check permissions
+        Player player = event.getHolder().getComponent(Player.getComponentType());
+        boolean isAdmin = player != null && (player.hasPermission("*") || player.hasPermission("hycompanion.admin"));
+
         // Check if API key is not set (null, empty, or default value)
         String apiKey = config.connection().apiKey();
         boolean isKeySet = apiKey != null && !apiKey.trim().isEmpty() && !"YOUR_SERVER_API_KEY".equals(apiKey);
 
-        if (!isKeySet) {
-            // Get Player entity component to check permissions
-            Player player = event.getHolder().getComponent(Player.getComponentType());
-
+        if (!isKeySet && isAdmin) {
             // Check if player is admin/op (has wildcard permission or specific register
             // permission)
             // Note: Hytale players implement PermissionHolder, but isOp() is not available
             // directly
-            if (player != null && (player.hasPermission("*") || player.hasPermission("hycompanion.command.register"))) {
-                player.sendMessage(
-                        Message.raw("Hycompanion API key not set. Please use /hycompanion register [key] to set it.")
-                                .color("#FF5555"));
-                player.sendMessage(Message.raw("You can get a key on https://app.hycompanion.dev")
-                        .color("#AAAAAA"));
-            }
+            player.sendMessage(
+                    Message.raw("Hycompanion API key not set. Please use /hycompanion register [key] to set it.")
+                            .color("#FF5555"));
+            player.sendMessage(Message.raw("You can get a key on https://app.hycompanion.dev")
+                    .color("#AAAAAA"));
+        }
+
+        // Check if manifest was created this session (restart required for NPC roles)
+        if (roleGenerator != null && roleGenerator.isManifestCreatedThisSession() && isAdmin) {
+            player.sendMessage(Message.raw("").color("#FF5555"));
+            player.sendMessage(
+                    Message.raw("[Hycompanion] SERVER RESTART REQUIRED!")
+                            .color("#FF0000"));
+            player.sendMessage(
+                    Message.raw("The asset pack manifest was just created.")
+                            .color("#FF5555"));
+            player.sendMessage(
+                    Message.raw("Please restart the server to enable NPC roles.")
+                            .color("#FF5555"));
+            player.sendMessage(Message.raw("").color("#FF5555"));
         }
 
         if (entityDiscoveryDone) {

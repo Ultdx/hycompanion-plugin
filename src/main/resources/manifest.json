@@ -1,7 +1,7 @@
 {
     "Group": "dev.hycompanion",
     "Name": "Hycompanion",
-    "Version": "1.1.0-SNAPSHOT",
+    "Version": "1.1.1-SNAPSHOT",
     "Description": "AI-powered NPC companion plugin for Hytale servers - Provides intelligent, context-aware NPC interactions using LLM backends. Sponsor: VeryGames.com",
     "Authors": [
         {

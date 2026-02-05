@@ -26,6 +26,7 @@ public class RoleGenerator {
     private final Path cacheDirectory;
     private final Path modDirectory;
     private final PluginLogger logger;
+    private boolean manifestCreatedThisSession = false;
 
     public RoleGenerator(Path modDirectory, Path dataFolder, PluginLogger logger) {
         this.modDirectory = modDirectory;
@@ -47,21 +48,34 @@ public class RoleGenerator {
         }
 
         try {
+            // Asset pack manifest must match plugin Group:Name for Hytale to associate them
+            // Plugin manifest has: "Group": "dev.hycompanion", "Name": "Hycompanion"
             String manifest = """
                     {
                         "Group": "dev.hycompanion",
-                        "Name": "HycompanionAssets",
-                        "Version": "1.1.0",
+                        "Name": "Hycompanion",
+                        "Version": "1.1.1",
                         "Description": "Hycompanion dynamic NPC role assets"
                     }
                     """;
             Files.writeString(manifestPath, manifest);
+            manifestCreatedThisSession = true;
             logger.info("Created mod manifest at: " + manifestPath);
-            logger.warn("RESTART REQUIRED: A manifest.json was created for the asset pack.");
+            logger.warn("=================================================================");
+            logger.warn("RESTART REQUIRED: manifest.json was created for the asset pack.");
             logger.warn("Please restart the server for Hytale to load the new NPC roles.");
+            logger.warn("=================================================================");
         } catch (Exception e) {
             logger.error("Failed to create mod manifest: " + e.getMessage());
         }
+    }
+
+    /**
+     * Check if the manifest was created during this session.
+     * If true, the server needs a restart to load NPC roles.
+     */
+    public boolean isManifestCreatedThisSession() {
+        return manifestCreatedThisSession;
     }
 
     /**
@@ -155,7 +169,7 @@ public class RoleGenerator {
                 try {
                     payload.put("apiKey", apiKey);
                     var serverInfo = new org.json.JSONObject();
-                    serverInfo.put("version", "1.1.0-SNAPSHOT");
+                    serverInfo.put("version", "1.1.1-SNAPSHOT");
                     serverInfo.put("playerCount", 0);
                     payload.put("serverInfo", serverInfo);
                 } catch (Exception e) {
