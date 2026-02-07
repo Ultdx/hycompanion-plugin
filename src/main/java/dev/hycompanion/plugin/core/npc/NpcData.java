@@ -32,6 +32,7 @@ public class NpcData {
     private volatile String personality;
     private volatile String greeting;
     private volatile Number chatDistance;
+    private volatile boolean broadcastReplies;
     private volatile String alignment;
     private volatile MoralProfile moralProfile;
     private volatile boolean invincible;
@@ -39,7 +40,7 @@ public class NpcData {
     private volatile Instant syncedAt;
 
     public NpcData(String id, String externalId, String name, String personality, String greeting,
-            Number chatDistance, String alignment, MoralProfile moralProfile, boolean invincible,
+            Number chatDistance, boolean broadcastReplies, String alignment, MoralProfile moralProfile, boolean invincible,
             boolean preventKnockback, Instant syncedAt) {
         this.id = id;
         this.externalId = externalId;
@@ -47,6 +48,7 @@ public class NpcData {
         this.personality = personality;
         this.greeting = greeting;
         this.chatDistance = chatDistance;
+        this.broadcastReplies = broadcastReplies;
         this.alignment = alignment;
         this.moralProfile = moralProfile;
         this.invincible = invincible;
@@ -68,6 +70,7 @@ public class NpcData {
             this.greeting = other.greeting;
         if (other.chatDistance != null)
             this.chatDistance = other.chatDistance;
+        this.broadcastReplies = other.broadcastReplies;
         if (other.alignment != null)
             this.alignment = other.alignment;
         if (other.moralProfile != null)
@@ -102,6 +105,10 @@ public class NpcData {
         return chatDistance;
     }
 
+    public boolean broadcastReplies() {
+        return broadcastReplies;
+    }
+
     public String alignment() {
         return alignment;
     }
@@ -132,6 +139,7 @@ public class NpcData {
             String personality,
             String greeting,
             Number chatDistance,
+            boolean broadcastReplies,
             String alignment,
             MoralProfile moralProfile,
             boolean isInvincible,
@@ -143,6 +151,7 @@ public class NpcData {
                 personality,
                 greeting,
                 chatDistance,
+                broadcastReplies,
                 alignment != null ? alignment : "neutral",
                 moralProfile != null ? moralProfile : MoralProfile.DEFAULT,
                 isInvincible,
@@ -156,7 +165,7 @@ public class NpcData {
     public NpcData withSyncedAt(Instant newSyncedAt) {
         return new NpcData(
                 id, externalId, name, personality, greeting,
-                chatDistance, alignment, moralProfile, invincible, preventKnockback, newSyncedAt);
+                chatDistance, broadcastReplies, alignment, moralProfile, invincible, preventKnockback, newSyncedAt);
     }
 
     /**

@@ -49,12 +49,12 @@ import java.util.UUID;
  * when the plugin is loaded by a real Hytale server.
  * 
  * @author Hycompanion Team
- * @version 1.1.1
+ * @version 1.1.2
  */
 public class HycompanionEntrypoint extends JavaPlugin {
 
     private static final HytaleLogger HYTALE_LOGGER = HytaleLogger.forEnclosingClass();
-    public static final String VERSION = "1.1.1-SNAPSHOT";
+    public static final String VERSION = "1.1.2-SNAPSHOT";
 
     // Plugin components
     private PluginLogger logger;
@@ -741,7 +741,16 @@ public class HycompanionEntrypoint extends JavaPlugin {
             player.sendMessage(Message.raw("").color("#FF5555"));
         }
 
+        // Validate existing NPCs and trigger rediscovery if needed
+        // This handles cases where entity references became stale after player disconnects
         if (entityDiscoveryDone) {
+            boolean hasValidNpcs = validateAndRediscoverIfNeeded();
+            if (hasValidNpcs) {
+                logger.debug("Entity discovery already done and valid NPCs exist, skipping rediscovery");
+                return;
+            }
+            // validateAndRediscoverIfNeeded already triggered rediscovery, just log
+            logger.info("Entity discovery was done but no valid NPCs found - rediscovery triggered");
             return;
         }
 
@@ -999,6 +1008,58 @@ public class HycompanionEntrypoint extends JavaPlugin {
                 alreadyValid + " already valid" + (failed > 0 ? ", " + failed + " failed" : ""));
 
         return new int[] { discovered, alreadyValid, failed };
+    }
+
+    /**
+     * Validate that tracked NPC entities are still valid.
+     * If no valid NPCs are found, trigger a rediscovery.
+     * This is called periodically and on player join to ensure NPCs are always trackable.
+     * 
+     * Note: This handles partial staleness - even if some NPCs are valid, we still
+     * trigger rediscovery to ensure ALL NPCs are properly tracked (some might be
+     * in unloaded chunks or have stale references while others don't).
+     * 
+     * @return true if valid NPCs exist (rediscovery may still have been triggered for missing ones)
+     */
+    public boolean validateAndRediscoverIfNeeded() {
+        if (hytaleAPI == null || npcManager == null) {
+            logger.debug("[Validation] Cannot validate - API or manager not ready");
+            return false;
+        }
+
+        // Check validity of all tracked NPC instances
+        var npcInstances = hytaleAPI.getNpcInstances();
+        int validCount = 0;
+        int invalidCount = 0;
+        int totalExpected = npcManager.getNpcCount(); // Number of NPC types synced from backend
+        
+        for (var npc : npcInstances) {
+            if (npc.entityRef() != null && hytaleAPI.isNpcInstanceEntityValid(npc.entityUuid())) {
+                validCount++;
+            } else {
+                invalidCount++;
+            }
+        }
+
+        logger.debug("[Validation] NPC validation: " + validCount + " valid, " + invalidCount + " invalid/stale");
+
+        // Trigger rediscovery if:
+        // 1. No valid NPCs at all, OR
+        // 2. Some NPCs are invalid (partial staleness - could be due to chunk unloading, respawn, etc.)
+        // 3. We have fewer valid instances than expected NPC types (some NPCs never got discovered)
+        boolean needsRediscovery = validCount == 0 || invalidCount > 0 || validCount < totalExpected;
+
+        if (needsRediscovery) {
+            logger.warn("[Validation] NPC staleness detected (valid=" + validCount + ", invalid=" + invalidCount + 
+                       ", expected=" + totalExpected + "). Triggering rediscovery...");
+            
+            // Reset entityDiscoveryDone to allow rediscovery
+            // scheduleEntityDiscovery will handle the delay for chunk loading
+            entityDiscoveryDone = false;
+            scheduleEntityDiscovery("Validation", 3000, true);
+        }
+        
+        return validCount > 0;
     }
 
     /**

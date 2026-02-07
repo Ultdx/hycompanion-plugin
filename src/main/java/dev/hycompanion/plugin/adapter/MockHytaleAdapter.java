@@ -103,6 +103,7 @@ public class MockHytaleAdapter implements HytaleAPI {
                 "Default Personality",
                 "Hello!",
                 10,
+                false,
                 "neutral",
                 null, false, false);
 

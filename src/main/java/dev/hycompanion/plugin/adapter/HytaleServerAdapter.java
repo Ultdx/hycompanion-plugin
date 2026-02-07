@@ -1799,6 +1799,9 @@ public class HytaleServerAdapter implements HytaleAPI {
     public boolean isNpcInstanceEntityValid(UUID npcInstanceId) {
 
         NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
+        if (npcInstanceData == null) {
+            return false;
+        }
         Ref<EntityStore> entityRef = npcInstanceData.entityRef();
 
         // No entity reference tracked
@@ -3992,3 +3995,4 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
 }
+

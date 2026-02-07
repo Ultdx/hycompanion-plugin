@@ -679,9 +679,10 @@ public class SocketManager {
 
             boolean isInvincible = json.optBoolean("isInvincible", false);
             boolean preventKnockback = json.optBoolean("preventKnockback", false);
+            boolean broadcastReplies = json.optBoolean("broadcastReplies", false);
 
             // Create NPC data
-            NpcData npc = NpcData.fromSync(id, externalId, name, personality, greeting, chatDistance, alignment,
+            NpcData npc = NpcData.fromSync(id, externalId, name, personality, greeting, chatDistance, broadcastReplies, alignment,
                     moralProfile, isInvincible, preventKnockback);
 
             // Register in managers

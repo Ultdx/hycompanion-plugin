@@ -53,10 +53,10 @@ public class BlockClassifier {
         
         // Plants and organic materials
         MATERIAL_KEYWORDS.put("plant", Arrays.asList(
-            "plant", "crop", "flower", "leaf", "leaves", "sapling", "seed",
+            "plant", "crop", "flower", "sapling", "seed",
             "grass", "fern", "vine", "moss", "lichen", "bush", "shrub",
             "hay", "straw", "reed", "cane", "root", "bulb", "petal"
-        ));
+        )); //Removed  "leaf", "leaves", because they can be higher up in the tree (failing path finding)
         
         // Fungi
         MATERIAL_KEYWORDS.put("fungus", Arrays.asList(

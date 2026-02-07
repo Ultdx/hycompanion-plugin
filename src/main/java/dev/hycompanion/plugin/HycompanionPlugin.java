@@ -25,7 +25,7 @@ import java.nio.file.StandardCopyOption;
  * context-aware NPC interactions.
  * 
  * @author Hycompanion Team / NOLDO
- * @version 1.1.1
+ * @version 1.1.2
  * @see <a href="https://hycompanion.dev">Hycompanion Website</a>
  */
 public class HycompanionPlugin {
@@ -34,7 +34,7 @@ public class HycompanionPlugin {
     private static HycompanionPlugin instance;
 
     // Plugin version
-    public static final String VERSION = "1.1.1-SNAPSHOT";
+    public static final String VERSION = "1.1.2-SNAPSHOT";
 
     // Plugin components
     private PluginConfig config;
@@ -63,7 +63,7 @@ public class HycompanionPlugin {
     /**
      * Plugin enable - called when plugin is loaded
      * 
-     * TODO: [HYTALE-API] This should be called from Hytale's plugin lifecycle
+     * This should be called from Hytale's plugin lifecycle
      * e.g., extends HytalePlugin { @Override void onEnable() }
      */
     public void onEnable() {
@@ -95,8 +95,6 @@ public class HycompanionPlugin {
                 // Note: Requires JavaPlugin instance from Hytale's plugin system
                 logger.info("Detected Hytale Server environment");
                 logger.info("Hytale API adapter requires JavaPlugin context - using Mock for now");
-                // TODO: Pass JavaPlugin instance when integrating with Hytale plugin system
-                // hytaleAPI = new HytaleServerAdapter(logger, javaPlugin);
                 hytaleAPI = new MockHytaleAdapter(logger);
             } else {
                 // Standalone testing mode

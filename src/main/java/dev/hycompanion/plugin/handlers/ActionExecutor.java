@@ -77,7 +77,8 @@ public class ActionExecutor {
         // It is managed by ChatHandler based on the queue state.
 
         // Handle error_message action first - it doesn't require NPC instance
-        // This ensures error messages are always sent to the player even if NPC is not found
+        // This ensures error messages are always sent to the player even if NPC is not
+        // found
         if ("error_message".equals(action)) {
             try {
                 executeErrorMessage(npcInstanceId, playerId, params);
@@ -237,6 +238,7 @@ public class ActionExecutor {
      * This is the primary way NPCs communicate
      * 
      * If playerId is null or empty, broadcasts to all nearby players.
+     * If params.broadcast is true, broadcasts to all nearby players within chat distance.
      * 
      * NOTE: Chat bubbles above NPC heads are NOT currently supported in Hytale's
      * plugin API. This feature would require custom UI implementation which is
@@ -256,6 +258,12 @@ public class ActionExecutor {
             return;
         }
 
+        // Check if broadcasting is enabled (from params or NPC config)
+        boolean broadcastFromParams = params != null && params.optBoolean("broadcast", false);
+        NpcData npc = npcInstanceData.npcData();
+        boolean broadcastFromConfig = npc != null && npc.broadcastReplies();
+        boolean shouldBroadcast = broadcastFromParams || broadcastFromConfig;
+
         // Check if playerId is provided
         boolean hasPlayerId = playerId != null && !playerId.isEmpty();
 
@@ -269,45 +277,24 @@ public class ActionExecutor {
         }
 
         // Format message with NPC name and prefix
-        NpcData npc = npcInstanceData.npcData();
         String npcName = npc != null ? npc.name() : npcInstanceData.entityUuid().toString();
         // New format: [NPC] Name to PlayerName: Message
         String formattedMessage = formatNpcMessage(npcName, message, targetPlayerName);
 
-        if (hasPlayerId) {
-            // Rotate NPC toward the specific player when responding
-            java.util.concurrent.CompletableFuture.runAsync(() -> {
-                try {
-                    hytaleAPI.getPlayer(playerId).ifPresent(player -> {
-                        if (player.location() != null) {
-                            hytaleAPI.rotateNpcInstanceToward(npcInstanceData.entityUuid(), player.location());
-                        }
-                    });
-                } catch (Exception e) {
-                    Sentry.captureException(e);
-                    // Ignore - rotation is optional
-                }
-            });
-
-            // Send to specific player
-            hytaleAPI.sendNpcMessage(npcInstanceData.entityUuid(), playerId, formattedMessage);
-
-            if (config.logging().logActions()) {
-                logger.info(
-                        "NPC [" + npcInstanceData.entityUuid() + "] (UUID: " + npcInstanceData.entityUuid().toString()
-                                + ") says to [" + playerId + "]: " + message);
-            }
-        } else {
-            // No specific player - broadcast to all nearby players
-            // Get nearby players using greeting range from config
+        if (shouldBroadcast) {
+            // Broadcast to all nearby players using NPC's chat distance
             Optional<Location> npcLoc = hytaleAPI.getNpcInstanceLocation(npcInstanceData.entityUuid());
             if (npcLoc.isEmpty()) {
                 logger.warn("Cannot broadcast message - NPC location unknown: " + npcInstanceData.entityUuid());
                 return;
             }
 
+            // Use NPC's chat distance for broadcast range, fallback to greeting range from config
+            Number chatDistance = npc != null ? npc.chatDistance() : null;
+            double broadcastRange = chatDistance != null ? chatDistance.doubleValue() : config.gameplay().greetingRange();
+            
             java.util.List<dev.hycompanion.plugin.api.GamePlayer> nearbyPlayers = hytaleAPI
-                    .getNearbyPlayers(npcLoc.get(), config.gameplay().greetingRange());
+                    .getNearbyPlayers(npcLoc.get(), broadcastRange);
 
             if (nearbyPlayers.isEmpty()) {
                 logger.debug("No nearby players to receive broadcast from NPC: " + npcInstanceData.entityUuid());
@@ -324,8 +311,34 @@ public class ActionExecutor {
 
             if (config.logging().logActions()) {
                 logger.info("NPC [" + npcInstanceData.entityUuid() + "] broadcasts to " +
-                        nearbyPlayers.size() + " players: " + message);
+                        nearbyPlayers.size() + " players (range: " + broadcastRange + "): " + message);
             }
+        } else if (hasPlayerId) {
+            // Rotate NPC toward the specific player when responding
+            java.util.concurrent.CompletableFuture.runAsync(() -> {
+                try {
+                    hytaleAPI.getPlayer(playerId).ifPresent(player -> {
+                        if (player.location() != null) {
+                            hytaleAPI.rotateNpcInstanceToward(npcInstanceData.entityUuid(), player.location());
+                        }
+                    });
+                } catch (Exception e) {
+                    Sentry.captureException(e);
+                    // Ignore - rotation is optional
+                }
+            });
+
+            // Send to specific player only
+            hytaleAPI.sendNpcMessage(npcInstanceData.entityUuid(), playerId, formattedMessage);
+
+            if (config.logging().logActions()) {
+                logger.info(
+                        "NPC [" + npcInstanceData.entityUuid() + "] (UUID: " + npcInstanceData.entityUuid().toString()
+                                + ") says to [" + playerId + "]: " + message);
+            }
+        } else {
+            // No specific player and no broadcast - just log a warning
+            logger.warn("Say action with no playerId and broadcast disabled for NPC: " + npcInstanceData.entityUuid());
         }
     }
 
@@ -430,7 +443,21 @@ public class ActionExecutor {
         hytaleAPI.moveNpcTo(npcInstanceId, destination).thenAccept(result -> {
             if (ack != null) {
                 org.json.JSONObject response = new org.json.JSONObject();
-                response.put("status", result.status());
+
+                // Map result status to response format expected by backend
+                String status = result.status();
+                if ("success".equals(status)) {
+                    response.put("success", true);
+                } else if ("timeout".equals(status)) {
+                    response.put("stuck", true);
+                    response.put("reason", "Path blocked or movement timed out");
+                } else if ("shutdown".equals(status)) {
+                    response.put("interrupted", true);
+                } else {
+                    // Any other failure status
+                    response.put("stuck", true);
+                    response.put("reason", status);
+                }
 
                 if (result.finalLocation() != null) {
                     response.put("x", result.finalLocation().x());
@@ -454,7 +481,8 @@ public class ActionExecutor {
     private void executeErrorMessage(UUID npcInstanceId, String playerId, JSONObject params) {
         String message = params != null ? params.optString("message", "An error occurred.") : "An error occurred.";
 
-        // Send red message to player (bypass NPC entity check since this is just error display)
+        // Send red message to player (bypass NPC entity check since this is just error
+        // display)
         // The HytaleAPI implementation will color this with #FF0000 (red)
         hytaleAPI.sendErrorMessage(playerId, message);
 
@@ -570,13 +598,13 @@ public class ActionExecutor {
             response.put("x", location.get().x());
             response.put("y", location.get().y());
             response.put("z", location.get().z());
-            
+
             if (ack != null) {
                 ack.call(response);
             }
-            
+
             if (config.logging().logActions()) {
-                logger.info("[NPC:" + npcInstanceId + "] current position: (" + 
+                logger.info("[NPC:" + npcInstanceId + "] current position: (" +
                         location.get().x() + ", " + location.get().y() + ", " + location.get().z() + ")");
             }
         } else {
@@ -598,9 +626,9 @@ public class ActionExecutor {
             return;
         }
         UUID npcInstanceId = npcInstanceData.entityUuid();
-        
+
         int duration = params != null ? params.optInt("duration", 1000) : 1000;
-        
+
         // Acknowledge immediately - the actual wait happens in the backend
         if (ack != null) {
             org.json.JSONObject response = new org.json.JSONObject();
@@ -608,7 +636,7 @@ public class ActionExecutor {
             response.put("waitedMs", duration);
             ack.call(response);
         }
-        
+
         if (config.logging().logActions()) {
             logger.info("[NPC:" + npcInstanceId + "] wait: " + duration + "ms");
         }
