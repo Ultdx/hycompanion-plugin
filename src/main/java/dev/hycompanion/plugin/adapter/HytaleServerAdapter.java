@@ -207,11 +207,31 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public void sendMessage(String playerId, String message) {
-        World world = Universe.get().getDefaultWorld();
+        // Try to get the player's world first
+        World world = null;
+        try {
+            UUID uuid = UUID.fromString(playerId);
+            PlayerRef playerRef = Universe.get().getPlayer(uuid);
+            if (playerRef != null) {
+                UUID worldUuid = playerRef.getWorldUuid();
+                if (worldUuid != null) {
+                    world = Universe.get().getWorld(worldUuid);
+                }
+            }
+        } catch (Exception e) {
+            // Ignore, will fall back to default
+        }
+        
+        // Fall back to default world
+        if (world == null) {
+            world = Universe.get().getDefaultWorld();
+        }
+        
         if (world == null)
             return;
 
-        world.execute(() -> {
+        final World targetWorld = world;
+        targetWorld.execute(() -> {
             try {
                 UUID uuid = UUID.fromString(playerId);
                 PlayerRef playerRef = Universe.get().getPlayer(uuid);
@@ -232,11 +252,31 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public void sendNpcMessage(UUID npcInstanceId, String playerId, String message) {
-        World world = Universe.get().getDefaultWorld();
+        // Try to get the player's world first
+        World world = null;
+        try {
+            UUID uuid = UUID.fromString(playerId);
+            PlayerRef playerRef = Universe.get().getPlayer(uuid);
+            if (playerRef != null) {
+                UUID worldUuid = playerRef.getWorldUuid();
+                if (worldUuid != null) {
+                    world = Universe.get().getWorld(worldUuid);
+                }
+            }
+        } catch (Exception e) {
+            // Ignore, will fall back to default
+        }
+        
+        // Fall back to default world
+        if (world == null) {
+            world = Universe.get().getDefaultWorld();
+        }
+        
         if (world == null)
             return;
 
-        world.execute(() -> {
+        final World targetWorld = world;
+        targetWorld.execute(() -> {
             try {
                 UUID uuid = UUID.fromString(playerId);
                 PlayerRef playerRef = Universe.get().getPlayer(uuid);
@@ -264,6 +304,9 @@ public class HytaleServerAdapter implements HytaleAPI {
             return;
         }
 
+        // For broadcasting, players could be in different worlds.
+        // We use the default world's executor for simplicity since PlayerRef.sendMessage()
+        // works regardless of which world thread we're on.
         World world = Universe.get().getDefaultWorld();
         if (world == null)
             return;
@@ -293,11 +336,31 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public void sendErrorMessage(String playerId, String message) {
-        World world = Universe.get().getDefaultWorld();
+        // Try to get the player's world first
+        World world = null;
+        try {
+            UUID uuid = UUID.fromString(playerId);
+            PlayerRef playerRef = Universe.get().getPlayer(uuid);
+            if (playerRef != null) {
+                UUID worldUuid = playerRef.getWorldUuid();
+                if (worldUuid != null) {
+                    world = Universe.get().getWorld(worldUuid);
+                }
+            }
+        } catch (Exception e) {
+            // Ignore, will fall back to default
+        }
+        
+        // Fall back to default world
+        if (world == null) {
+            world = Universe.get().getDefaultWorld();
+        }
+        
         if (world == null)
             return;
 
-        world.execute(() -> {
+        final World targetWorld = world;
+        targetWorld.execute(() -> {
             try {
                 UUID uuid = UUID.fromString(playerId);
                 PlayerRef playerRef = Universe.get().getPlayer(uuid);
@@ -327,6 +390,7 @@ public class HytaleServerAdapter implements HytaleAPI {
             World world = getWorldByName(location.world());
             if (world == null) {
                 world = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] spawnNpc: Could not find world '" + location.world() + "', falling back to default world");
             }
 
             if (world == null) {
@@ -518,8 +582,15 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         // Schedule removal on the world thread to respect Hytale's threading rules
         try {
-            World world = Universe.get().getDefaultWorld();
-            if (world != null) {
+            // Get the correct world for this NPC, not the default world
+            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+            if (resolvedWorld == null) {
+                resolvedWorld = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] removeNpc: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            }
+            if (resolvedWorld != null) {
+                final World world = resolvedWorld;
                 world.execute(() -> {
                     try {
                         // Check validity inside the thread
@@ -663,6 +734,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         World resolvedWorld = getWorldByName(spawnLocation.world());
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] executeRespawn: Could not find world '" + spawnLocation.world() + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             logger.error("[Hycompanion] World not available for respawn of '" + externalId + "'");
@@ -737,11 +809,29 @@ public class HytaleServerAdapter implements HytaleAPI {
             return;
         }
 
-        // Execute on world thread for safety
-        World world = Universe.get().getDefaultWorld();
-        if (world != null) {
+        // Group instances by world to execute on the correct world thread for each
+        Map<String, List<NpcInstanceData>> instancesByWorld = new HashMap<>();
+        for (NpcInstanceData instance : instancesToUpdate) {
+            String worldName = instance.spawnLocation() != null ? instance.spawnLocation().world() : "default";
+            instancesByWorld.computeIfAbsent(worldName, k -> new ArrayList<>()).add(instance);
+        }
+
+        // Execute on each world's thread
+        for (Map.Entry<String, List<NpcInstanceData>> entry : instancesByWorld.entrySet()) {
+            String worldName = entry.getKey();
+            List<NpcInstanceData> worldInstances = entry.getValue();
+            
+            World world = Universe.get().getWorld(worldName);
+            if (world == null) {
+                world = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] updateNpcCapabilities: Could not find world '" + worldName + "', falling back to default world");
+            }
+            if (world == null) {
+                continue;
+            }
+            
             world.execute(() -> {
-                for (NpcInstanceData instance : instancesToUpdate) {
+                for (NpcInstanceData instance : worldInstances) {
                     try {
                         Ref<EntityStore> entityRef = instance.entityRef();
                         if (entityRef != null && entityRef.isValid()) {
@@ -876,9 +966,17 @@ public class HytaleServerAdapter implements HytaleAPI {
             try {
                 // Get the world from the entity store and execute on world thread
                 Store<EntityStore> store = entityRef.getStore();
-                World world = Universe.get().getDefaultWorld();
+                
+                // Get the correct world for this NPC, not the default world
+                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+                World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+                if (resolvedWorld == null) {
+                    resolvedWorld = Universe.get().getDefaultWorld();
+                    logger.warn("[Hycompanion] triggerNpcEmote: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                }
 
-                if (world != null) {
+                if (resolvedWorld != null) {
+                    final World world = resolvedWorld;
                     // Animation must be played on the world thread
                     world.execute(() -> {
                         try {
@@ -932,9 +1030,17 @@ public class HytaleServerAdapter implements HytaleAPI {
         if (entityRef != null && entityRef.isValid()) {
             try {
                 Store<EntityStore> store = entityRef.getStore();
-                World world = Universe.get().getDefaultWorld();
+                
+                // Get the correct world for this NPC, not the default world
+                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+                World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+                if (resolvedWorld == null) {
+                    resolvedWorld = Universe.get().getDefaultWorld();
+                    logger.warn("[Hycompanion] moveNpcTo: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                }
 
-                if (world != null) {
+                if (resolvedWorld != null) {
+                    final World world = resolvedWorld;
                     world.execute(() -> {
                         try {
                             // 1. Spawn invisible target entity (Projectile with NetworkId + BoundingBox)
@@ -1168,7 +1274,22 @@ public class HytaleServerAdapter implements HytaleAPI {
             return;
         }
         try {
-            World world = Universe.get().getDefaultWorld();
+            // Try to get the world from the entity's store
+            World world = null;
+            if (ref.isValid()) {
+                try {
+                    Store<EntityStore> store = ref.getStore();
+                    if (store != null) {
+                        world = store.getExternalData().getWorld();
+                    }
+                } catch (Exception e) {
+                    // Ignore, will fall back to default
+                }
+            }
+            // Fall back to default world
+            if (world == null) {
+                world = Universe.get().getDefaultWorld();
+            }
             if (world != null) {
                 world.execute(() -> {
                     if (ref.isValid()) {
@@ -1232,11 +1353,18 @@ public class HytaleServerAdapter implements HytaleAPI {
             return future;
         }
 
-        World world = Universe.get().getDefaultWorld();
-        if (world == null) {
+        // Get the correct world for this NPC, not the default world
+        String worldName = npcData.spawnLocation() != null ? npcData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] findBlock: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
             future.complete(Optional.empty());
             return future;
         }
+        final World world = resolvedWorld;
 
         world.execute(() -> {
             try {
@@ -1381,11 +1509,18 @@ public class HytaleServerAdapter implements HytaleAPI {
             return future;
         }
 
-        World world = Universe.get().getDefaultWorld();
-        if (world == null) {
+        // Get the correct world for this NPC, not the default world
+        String worldName = npcData.spawnLocation() != null ? npcData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] findEntity: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
             future.complete(Optional.empty());
             return future;
         }
+        final World world = resolvedWorld;
 
         world.execute(() -> {
             try {
@@ -1558,8 +1693,12 @@ public class HytaleServerAdapter implements HytaleAPI {
             return Optional.empty();
         };
 
-        // Check if we are already on the WorldThread
-        if (Thread.currentThread().getName().contains("WorldThread")) {
+        // Check if we are already on the correct WorldThread for this NPC
+        String expectedWorldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+        String currentThreadName = Thread.currentThread().getName();
+        if (currentThreadName.contains("WorldThread") && expectedWorldName != null && 
+            currentThreadName.contains(expectedWorldName)) {
+            // We're already on the correct world thread, can execute directly
             Optional<Location> result = locationExtractor.get();
             if (result.isPresent()) {
                 consecutiveTimeouts.set(0);
@@ -1569,7 +1708,17 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         // Schedule on WorldThread and wait for result
         try {
-            World world = Universe.get().getDefaultWorld();
+            // Get the world from the NPC's spawn location, not the default world
+            // The NPC might be in a different world (e.g., "Arcana" vs "Lobby")
+            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+            World world = worldName != null ? Universe.get().getWorld(worldName) : null;
+            
+            // Fallback to default world if specific world not found
+            if (world == null) {
+                world = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] getNpcInstanceLocation: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            }
+            
             if (world == null) {
                 return Optional.empty();
             }
@@ -1645,10 +1794,17 @@ public class HytaleServerAdapter implements HytaleAPI {
             existing.cancel(false);
         }
 
-        World world = Universe.get().getDefaultWorld();
-        if (world == null) {
+        // Get the correct world for this NPC, not the default world
+        String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] rotateNpcInstanceToward: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
             return;
         }
+        final World world = resolvedWorld;
 
         // Calculate target yaw once at start
         final float[] targetYaw = new float[1];
@@ -1823,23 +1979,37 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         // Verify NPC component still exists
-        try {
-            Store<EntityStore> store = entityRef.getStore();
-            if (store == null) {
-                logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": Could not get entity store");
+        // We need to check on the correct world thread to avoid thread assertion errors
+        String expectedWorldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+        String currentThreadName = Thread.currentThread().getName();
+        boolean onCorrectWorldThread = currentThreadName.contains("WorldThread") && expectedWorldName != null && 
+            currentThreadName.contains(expectedWorldName);
+        
+        if (onCorrectWorldThread) {
+            // Already on correct world thread, can check directly
+            try {
+                Store<EntityStore> store = entityRef.getStore();
+                if (store == null) {
+                    logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": Could not get entity store");
+                    return false;
+                }
+                NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                if (npcEntity == null) {
+                    logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": NPC component not found on entity");
+                    return false;
+                }
+                return true;
+            } catch (Exception e) {
+                logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId
+                        + ": Exception checking entity - " + e.getMessage());
+                Sentry.captureException(e);
                 return false;
             }
-            NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
-            if (npcEntity == null) {
-                logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": NPC component not found on entity");
-                return false;
-            }
+        } else {
+            // Not on correct world thread, just assume valid if entityRef is valid
+            // The actual validation will happen when the NPC is accessed on the correct thread
+            logger.debug("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": Not on correct world thread (" + expectedWorldName + "), skipping component check");
             return true;
-        } catch (Exception e) {
-            logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId
-                    + ": Exception checking entity - " + e.getMessage());
-            Sentry.captureException(e);
-            return false;
         }
     }
 
@@ -2068,6 +2238,9 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public String getTimeOfDay() {
+        // NOTE: This method returns the time of day for the default world.
+        // For multi-world support, the API would need to be extended to accept a world parameter.
+        // Different worlds may have different times (e.g., Lobby vs Arcana).
         World world = Universe.get().getDefaultWorld();
         if (world != null) {
             try {
@@ -2103,6 +2276,9 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public String getWeather() {
+        // NOTE: This method returns the weather for the default world.
+        // For multi-world support, the API would need to be extended to accept a world parameter.
+        // Different worlds may have different weather (e.g., Lobby vs Arcana).
         World world = Universe.get().getDefaultWorld();
         if (world != null) {
             try {
@@ -2227,6 +2403,8 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public String getWorldName() {
+        // NOTE: This returns the default world's name as a global fallback.
+        // For specific world names, use Location.world() or getWorldByName().
         World world = Universe.get().getDefaultWorld();
         return world != null ? world.getName() : "world";
     }
@@ -2316,9 +2494,17 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            World world = Universe.get().getDefaultWorld();
+            
+            // Get the correct world for this NPC, not the default world
+            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+            if (resolvedWorld == null) {
+                resolvedWorld = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] startFollowingPlayer: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            }
 
-            if (world != null) {
+            if (resolvedWorld != null) {
+                final World world = resolvedWorld;
                 world.execute(() -> {
                     try {
                         NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
@@ -2432,9 +2618,17 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            World world = Universe.get().getDefaultWorld();
+            
+            // Get the correct world for this NPC, not the default world
+            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+            if (resolvedWorld == null) {
+                resolvedWorld = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] stopFollowing: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            }
 
-            if (world != null) {
+            if (resolvedWorld != null) {
+                final World world = resolvedWorld;
                 world.execute(() -> {
                     try {
                         NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
@@ -2544,8 +2738,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                             " (was following disconnecting player: " + playerName + ")");
 
                     // Use world execute to clear the target on the world thread
-                    World world = Universe.get().getDefaultWorld();
-                    if (world != null) {
+                    // Get the correct world for this NPC, not the default world
+                    String worldName = npcInstance.spawnLocation() != null ? npcInstance.spawnLocation().world() : null;
+                    World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+                    if (resolvedWorld == null) {
+                        resolvedWorld = Universe.get().getDefaultWorld();
+                        logger.warn("[Hycompanion] clearFollowTargetsForPlayer: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                    }
+                    if (resolvedWorld != null) {
+                        final World world = resolvedWorld;
                         safeWorldExecute(world, () -> {
                             try {
                                 // Re-check validity inside world thread
@@ -2784,9 +2985,17 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            World world = Universe.get().getDefaultWorld();
+            
+            // Get the correct world for this NPC, not the default world
+            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+            if (resolvedWorld == null) {
+                resolvedWorld = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] startAttacking: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            }
 
-            if (world != null) {
+            if (resolvedWorld != null) {
+                final World world = resolvedWorld;
                 world.execute(() -> {
                     try {
                         NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
@@ -2952,9 +3161,17 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            World world = Universe.get().getDefaultWorld();
+            
+            // Get the correct world for this NPC, not the default world
+            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+            if (resolvedWorld == null) {
+                resolvedWorld = Universe.get().getDefaultWorld();
+                logger.warn("[Hycompanion] stopAttacking: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            }
 
-            if (world != null) {
+            if (resolvedWorld != null) {
+                final World world = resolvedWorld;
                 world.execute(() -> {
                     try {
                         NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
@@ -3154,11 +3371,18 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         // Entity component access must happen on the WorldThread
-        World world = Universe.get().getDefaultWorld();
-        if (world == null) {
+        // Get the correct world for this NPC, not the default world
+        String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] getAvailableAnimations: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
             logger.info("[Hycompanion] Cannot get animations - world not available");
             return Collections.emptyList();
         }
+        final World world = resolvedWorld;
 
         java.util.concurrent.CompletableFuture<List<String>> future = new java.util.concurrent.CompletableFuture<>();
 
@@ -3271,12 +3495,6 @@ public class HytaleServerAdapter implements HytaleAPI {
     public void showThinkingIndicator(UUID npcInstanceId) {
         logger.debug("[Hycompanion] Showing thinking indicator for NPC: " + npcInstanceId);
 
-        World world = Universe.get().getDefaultWorld();
-        if (world == null) {
-            logger.warn("[Hycompanion] Cannot show thinking indicator - No default world available");
-            return;
-        }
-
         // [Shutdown Fix] Don't show thinking indicators during shutdown
         if (isShuttingDown()) {
             logger.debug("[Hycompanion] Skipping thinking indicator during shutdown");
@@ -3296,6 +3514,20 @@ public class HytaleServerAdapter implements HytaleAPI {
                     " (entity was never spawned/discovered. Wait for AllNPCsLoadedEvent or use /hycompanion rediscover)");
             return;
         }
+        
+        // Get the correct world for this NPC, not the default world
+        String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] showThinkingIndicator: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
+            logger.warn("[Hycompanion] Cannot show thinking indicator - No world available");
+            return;
+        }
+        final World world = resolvedWorld;
+        
         Ref<EntityStore> npcEntityRef = npcInstanceData.entityRef();
         if (npcEntityRef == null) {
             logger.warn("[Hycompanion] Cannot show thinking indicator - NPC entity not tracked: " + npcInstanceId +
@@ -3691,7 +3923,29 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         // Remove entity on world thread
-        World world = Universe.get().getDefaultWorld();
+        // Try to get the world from the hologram's store first, then fall back to NPC's world, then default
+        World world = null;
+        if (hologramRef.isValid()) {
+            try {
+                Store<EntityStore> store = hologramRef.getStore();
+                if (store != null) {
+                    world = store.getExternalData().getWorld();
+                }
+            } catch (Exception e) {
+                // Ignore, will fall back
+            }
+        }
+        // Fall back to NPC's world
+        if (world == null) {
+            NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+            String worldName = npcData != null && npcData.spawnLocation() != null ? npcData.spawnLocation().world() : null;
+            world = worldName != null ? Universe.get().getWorld(worldName) : null;
+        }
+        // Final fallback to default world
+        if (world == null) {
+            world = Universe.get().getDefaultWorld();
+        }
+        
         if (world != null) {
             try {
                 world.execute(() -> {
