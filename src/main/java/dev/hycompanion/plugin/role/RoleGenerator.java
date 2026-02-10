@@ -54,7 +54,7 @@ public class RoleGenerator {
                     {
                         "Group": "dev.hycompanion",
                         "Name": "Hycompanion",
-                        "Version": "1.1.2",
+                        "Version": "1.1.3",
                         "Description": "Hycompanion dynamic NPC role assets"
                     }
                     """;
@@ -169,7 +169,7 @@ public class RoleGenerator {
                 try {
                     payload.put("apiKey", apiKey);
                     var serverInfo = new org.json.JSONObject();
-                    serverInfo.put("version", "1.1.2-SNAPSHOT");
+                    serverInfo.put("version", "1.1.3-SNAPSHOT");
                     serverInfo.put("playerCount", 0);
                     payload.put("serverInfo", serverInfo);
                 } catch (Exception e) {

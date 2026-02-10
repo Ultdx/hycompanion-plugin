@@ -154,7 +154,8 @@ public class ActionExecutor {
                 }
                 case "find_block" -> executeFindBlock(npcInstanceData, params, ack);
                 case "scan_blocks" -> executeScanBlocks(npcInstanceData, params, ack);
-                case "find_entity" -> executeFindEntity(npcInstanceData, params, ack);
+                case "scan_entities" -> executeScanEntities(npcInstanceData, params, ack);
+                // case "find_entity" -> executeFindEntity(npcInstanceData, params, ack); // Deprecated
                 case "get_current_position" -> executeGetCurrentPosition(npcInstanceData, ack);
                 case "wait" -> executeWait(npcInstanceData, params, ack);
                 default -> {
@@ -234,7 +235,30 @@ public class ActionExecutor {
     }
 
     /**
-     * FIND_ENTITY - Search for an entity by type/name near the NPC
+     * SCAN_ENTITIES - Scan surroundings and return all entities with their details
+     */
+    private void executeScanEntities(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (params == null || ack == null)
+            return;
+
+        int radius = params.optInt("radius", 32);
+
+        hytaleAPI.scanEntities(npcInstanceData.entityUuid(), radius).thenAccept(result -> {
+            if (result.isPresent()) {
+                ack.call(new JSONObject(result.get()).toString());
+            } else {
+                ack.call("{\"entities\": [], \"radius\": " + radius + ", \"totalEntities\": 0}");
+            }
+        }).exceptionally(e -> {
+            logger.error("Error scanning entities: " + e.getMessage());
+            Sentry.captureException(e);
+            ack.call("{\"error\": \"Internal error scanning entities\"}");
+            return null;
+        });
+    }
+
+    /**
+     * FIND_ENTITY - Search for an entity by type/name near the NPC (Deprecated)
      */
     private void executeFindEntity(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
         if (params == null || ack == null)

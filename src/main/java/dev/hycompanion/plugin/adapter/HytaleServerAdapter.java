@@ -102,13 +102,16 @@ public class HytaleServerAdapter implements HytaleAPI {
     // Track invisible target entities for move_to
     private final Map<UUID, Ref<EntityStore>> movementTargetEntities = new ConcurrentHashMap<>();
 
-    // Thinking indicator holograms - track entity refs and animation tasks per NPC
-    private final Map<UUID, Ref<EntityStore>> thinkingHologramEntities = new ConcurrentHashMap<>();
+    // Thinking indicator animation tasks per NPC
     private final Map<UUID, ScheduledFuture<?>> thinkingAnimationTasks = new ConcurrentHashMap<>();
 
     // Track busy NPCs (following or attacking) - used to prevent emotes while
     // moving
     private final Set<UUID> busyNpcs = ConcurrentHashMap.newKeySet();
+
+    // Thinking indicator references per NPC - stored separately for atomic operations
+    // Key present with valid ref = indicator exists; Key absent = no indicator
+    private final Map<UUID, Ref<EntityStore>> thinkingIndicatorRefs = new ConcurrentHashMap<>();
 
     // Track original spawn locations for NPC respawn: externalId -> Location
     private final Map<String, Location> npcSpawnLocations = new ConcurrentHashMap<>();
@@ -540,6 +543,9 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Get instance data first (before removing)
         NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
         String externalId = (npcInstanceData != null) ? npcInstanceData.npcData().externalId() : null;
+
+        // Destroy thinking indicator first (before removing NPC)
+        destroyThinkingIndicator(npcInstanceId);
 
         // [Shutdown Fix] During shutdown, don't try to remove entities from the world.
         // Hytale's shutdown process handles entity cleanup. Just remove from our
@@ -1839,6 +1845,201 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
     @Override
+    public CompletableFuture<Optional<Map<String, Object>>> scanEntities(UUID npcInstanceId, int radius) {
+        CompletableFuture<Optional<Map<String, Object>>> future = new CompletableFuture<>();
+
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            future.complete(Optional.empty());
+            return future;
+        }
+
+        // Get the correct world for this NPC
+        String worldName = npcData.spawnLocation() != null ? npcData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] scanEntities: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
+            future.complete(Optional.empty());
+            return future;
+        }
+        final World world = resolvedWorld;
+
+        world.execute(() -> {
+            try {
+                Ref<EntityStore> myselfRef = npcData.entityRef();
+                Store<EntityStore> store = myselfRef.getStore();
+                TransformComponent myTransform = store.getComponent(myselfRef, TransformComponent.getComponentType());
+
+                if (myTransform == null) {
+                    future.complete(Optional.empty());
+                    return;
+                }
+
+                Vector3d myPos = myTransform.getPosition();
+                int startX = (int) Math.floor(myPos.getX());
+                int startY = (int) Math.floor(myPos.getY());
+                int startZ = (int) Math.floor(myPos.getZ());
+                
+                EntityStore entityStore = store.getExternalData();
+
+                // Use reflection to access entitiesByUuid map
+                Field entitiesMapField = EntityStore.class.getDeclaredField("entitiesByUuid");
+                entitiesMapField.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                Map<UUID, Ref<EntityStore>> allEntities = (Map<UUID, Ref<EntityStore>>) entitiesMapField
+                        .get(entityStore);
+
+                List<Map<String, Object>> entities = new ArrayList<>();
+
+                // Iterate all entities
+                for (Ref<EntityStore> ref : allEntities.values()) {
+                    if (ref.equals(myselfRef) || !ref.isValid())
+                        continue;
+
+                    TransformComponent t = store.getComponent(ref, TransformComponent.getComponentType());
+                    if (t == null)
+                        continue;
+
+                    double dist = t.getPosition().distanceTo(myPos);
+                    if (dist > radius)
+                        continue;
+
+                    // Skip projectiles (holograms, thinking indicators, etc.)
+                    ProjectileComponent projectileComp = store.getComponent(ref, ProjectileComponent.getComponentType());
+                    if (projectileComp != null)
+                        continue;
+
+                    // Extract entity information
+                    String entityName = null;
+                    String entityType = "unknown";
+                    String appearance = null;
+                    UUID entityUuid = null;
+                    Double health = null;
+                    Double maxHealth = null;
+                    
+                    // Check for player
+                    com.hypixel.hytale.server.core.universe.PlayerRef pRef = store.getComponent(ref,
+                            com.hypixel.hytale.server.core.universe.PlayerRef.getComponentType());
+                    if (pRef != null) {
+                        entityType = "player";
+                        entityName = pRef.getUsername();
+                        entityUuid = pRef.getUuid();
+                        appearance = "Player";
+                    } else {
+                        // Check for NPC
+                        NPCEntity npcComp = store.getComponent(ref, NPCEntity.getComponentType());
+                        if (npcComp != null) {
+                            entityType = "npc";
+                            entityUuid = npcComp.getUuid();
+                            
+                            Nameplate np = store.getComponent(ref, Nameplate.getComponentType());
+                            if (np != null && np.getText() != null && !np.getText().isEmpty()) {
+                                entityName = np.getText();
+                            } else if (npcComp.getRole() != null && npcComp.getRoleName() != null) {
+                                // Use role name if available
+                                entityName = npcComp.getRoleName();
+                            } else {
+                                entityName = "NPC";
+                            }
+                            
+                            appearance = npcComp.getRole() != null && npcComp.getRoleName() != null
+                                    ? npcComp.getRoleName()
+                                    : "NPC";
+                        } else {
+                            // Check for dropped item
+                            com.hypixel.hytale.server.core.modules.entity.item.ItemComponent ic = store.getComponent(
+                                    ref,
+                                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent
+                                            .getComponentType());
+                            if (ic != null) {
+                                entityType = "item";
+                                entityName = ic.getItemStack().getItem().getId();
+                                appearance = "Dropped Item: " + entityName;
+                                
+                                com.hypixel.hytale.server.core.entity.UUIDComponent uuidComp = 
+                                    store.getComponent(ref, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                                if (uuidComp != null) {
+                                    entityUuid = uuidComp.getUuid();
+                                }
+                            }
+                            // Note: We're skipping creatures/mobs for now since they don't have a reliable
+                            // way to be distinguished from projectiles without AIComponent
+                        }
+                    }
+
+                    // Skip if we couldn't identify the entity
+                    if (entityName == null)
+                        continue;
+
+                    // Get health stats for players and NPCs
+                    if ("player".equals(entityType) || "npc".equals(entityType)) {
+                        try {
+                            com.hypixel.hytale.server.core.modules.entitystats.EntityStatMap statMap = 
+                                store.getComponent(ref, com.hypixel.hytale.server.core.modules.entitystats.EntityStatMap.getComponentType());
+                            if (statMap != null) {
+                                int healthIndex = com.hypixel.hytale.server.core.modules.entitystats.asset.DefaultEntityStatTypes.getHealth();
+                                if (healthIndex != Integer.MIN_VALUE) {
+                                    com.hypixel.hytale.server.core.modules.entitystats.EntityStatValue healthValue = statMap.get(healthIndex);
+                                    if (healthValue != null) {
+                                        health = (double) healthValue.get();
+                                        maxHealth = (double) healthValue.getMax();
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Health stats not available, skip
+                        }
+                    }
+
+                    // Build entity info
+                    Map<String, Object> entityInfo = new HashMap<>();
+                    entityInfo.put("name", entityName);
+                    entityInfo.put("type", entityType);
+                    if (appearance != null) {
+                        entityInfo.put("appearance", appearance);
+                    }
+                    if (entityUuid != null) {
+                        entityInfo.put("uuid", entityUuid.toString());
+                    }
+                    
+                    Vector3d pos = t.getPosition();
+                    entityInfo.put("coordinates", Map.of("x", pos.getX(), "y", pos.getY(), "z", pos.getZ()));
+                    entityInfo.put("distance", Math.round(dist * 100.0) / 100.0);
+                    
+                    if (health != null) {
+                        entityInfo.put("health", health);
+                    }
+                    if (maxHealth != null) {
+                        entityInfo.put("maxHealth", maxHealth);
+                    }
+
+                    entities.add(entityInfo);
+                }
+
+                // Build response
+                Map<String, Object> result = new HashMap<>();
+                result.put("current_position", Map.of("x", startX, "y", startY, "z", startZ));
+                result.put("radius", radius);
+                result.put("entities", entities);
+                result.put("totalEntities", entities.size());
+
+                logger.debug("Scan entities complete: found " + entities.size() + " entities in radius " + radius);
+                future.complete(Optional.of(result));
+
+            } catch (Exception e) {
+                logger.error("Error in scanEntities: " + e.getMessage());
+                Sentry.captureException(e);
+                future.complete(Optional.empty());
+            }
+        });
+
+        return future;
+    }
+
+    @Override
     public Optional<Location> getNpcInstanceLocation(UUID npcInstanceId) {
         // Fail fast if thread interrupted
         if (Thread.currentThread().isInterrupted()) {
@@ -3087,12 +3288,10 @@ public class HytaleServerAdapter implements HytaleAPI {
         stepStart = System.currentTimeMillis();
         int npcCount = npcInstanceEntities.size();
         int targetCount = movementTargetEntities.size();
-        int hologramCount = thinkingHologramEntities.size();
         int busyCount = busyNpcs.size();
 
         npcInstanceEntities.clear();
         movementTargetEntities.clear();
-        thinkingHologramEntities.clear();
         busyNpcs.clear();
         npcSpawnLocations.clear();
         pendingRespawns.clear();
@@ -3104,7 +3303,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         logger.info("[Hycompanion] Step 4/5: Cleared " + npcCount + " NPCs, " + targetCount + " targets, " +
-                hologramCount + " holograms, " + busyCount + " busy flags in " +
+                busyCount + " busy flags in " +
                 (System.currentTimeMillis() - stepStart) + "ms");
 
         // STEP 5: Brief pause for in-flight tasks
@@ -3694,132 +3893,154 @@ public class HytaleServerAdapter implements HytaleAPI {
             return;
         }
 
-        // Check if an indicator already exists - if so, just update the text
-        if (thinkingHologramEntities.containsKey(npcInstanceId)) {
-            logger.warn("[Hycompanion] Thinking indicator already exists for NPC: " + npcInstanceId);
+        // Get NPC instance data
+        NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
+        if (npcInstanceData == null) {
+            logger.warn("[Hycompanion] Cannot show thinking indicator - NPC entity not tracked: " + npcInstanceId);
             return;
         }
 
-        // Get NPC entity reference to find its position
-        NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
-        if (npcInstanceData == null) {
-            logger.warn("[Hycompanion] Cannot show thinking indicator - NPC entity not tracked: " + npcInstanceId +
-                    " (entity was never spawned/discovered. Wait for AllNPCsLoadedEvent or use /hycompanion rediscover)");
-            return;
-        }
-        
-        // Get the correct world for this NPC, not the default world
+        // Get the correct world for this NPC
         String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
         World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] showThinkingIndicator: Could not find world '" + worldName + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             logger.warn("[Hycompanion] Cannot show thinking indicator - No world available");
             return;
         }
         final World world = resolvedWorld;
-        
+
         Ref<EntityStore> npcEntityRef = npcInstanceData.entityRef();
-        if (npcEntityRef == null) {
-            logger.warn("[Hycompanion] Cannot show thinking indicator - NPC entity not tracked: " + npcInstanceId +
-                    " (entity was never spawned/discovered. Wait for AllNPCsLoadedEvent or use /hycompanion rediscover)");
-            return;
-        }
-        if (!npcEntityRef.isValid()) {
-            logger.warn("[Hycompanion] Cannot show thinking indicator - NPC entity reference stale: " + npcInstanceId +
-                    " (entity was removed/reloaded. Waiting for AllNPCsLoadedEvent to re-discover)");
-            // Clean up the stale reference
-            npcInstanceEntities.remove(npcInstanceId);
+        if (npcEntityRef == null || !npcEntityRef.isValid()) {
+            logger.warn("[Hycompanion] Cannot show thinking indicator - NPC entity not valid: " + npcInstanceId);
+            if (npcEntityRef != null && !npcEntityRef.isValid()) {
+                npcInstanceEntities.remove(npcInstanceId);
+            }
             return;
         }
 
-        // Execute on world thread to safely access entity data and spawn hologram
+        // Execute all logic on world thread for atomicity
         try {
             world.execute(() -> {
-                // [Shutdown Fix] Check shutdown on world thread
                 if (isShuttingDown()) {
                     return;
                 }
-                try {
-                    Store<EntityStore> store = npcEntityRef.getStore();
-                    if (store == null) {
-                        logger.warn("[Hycompanion] Cannot show thinking indicator - Could not get entity store");
-                        return;
-                    }
 
-                    // Get NPC position
-                    TransformComponent npcTransform = store.getComponent(npcEntityRef,
-                            TransformComponent.getComponentType());
-                    if (npcTransform == null) {
-                        logger.warn("[Hycompanion] Cannot show thinking indicator - NPC transform not found");
-                        return;
-                    }
-
-                    Vector3d npcPos = npcTransform.getPosition();
-
-                    // Create hologram entity above the NPC's head
-                    Vector3d hologramPos = new Vector3d(npcPos.getX(), npcPos.getY() + THINKING_HOLOGRAM_Y_OFFSET,
-                            npcPos.getZ());
-                    Vector3f hologramRotation = new Vector3f(0, 0, 0);
-
-                    // Create entity holder with required components
-                    Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
-
-                    // Add ProjectileComponent as the base entity type (invisible, no physics
-                    // needed)
-                    ProjectileComponent projectileComponent = new ProjectileComponent("Projectile");
-                    holder.putComponent(ProjectileComponent.getComponentType(), projectileComponent);
-
-                    // Set position
-                    holder.putComponent(TransformComponent.getComponentType(),
-                            new TransformComponent(hologramPos, hologramRotation));
-
-                    // Ensure UUID for the entity
-                    holder.ensureComponent(UUIDComponent.getComponentType());
-
-                    // Make it intangible (no collision)
-                    holder.ensureComponent(Intangible.getComponentType());
-
-                    // Initialize projectile (required to prevent null pointer)
-                    if (projectileComponent.getProjectile() == null) {
-                        projectileComponent.initialize();
-                    }
-
-                    // Add network ID so clients can see it
-                    holder.addComponent(NetworkId.getComponentType(),
-                            new NetworkId(world.getEntityStore().getStore().getExternalData().takeNextNetworkId()));
-
-                    // Add nameplate with initial thinking text
-                    Nameplate nameplate = new Nameplate(THINKING_STATES[0]);
-                    holder.addComponent(Nameplate.getComponentType(), nameplate);
-
-                    // Spawn the entity and get reference to it
-                    Ref<EntityStore> hologramRef = world.getEntityStore().getStore().addEntity(holder, AddReason.SPAWN);
-
-                    if (hologramRef != null && hologramRef.isValid()) {
-                        // Store the hologram reference
-                        thinkingHologramEntities.put(npcInstanceId, hologramRef);
-
-                        logger.info("[Hycompanion] Thinking indicator spawned for NPC: " + npcInstanceId +
-                                " at " + hologramPos.getX() + ", " + hologramPos.getY() + ", " + hologramPos.getZ());
-
-                        // Start animation task to cycle through dots AND follow NPC position
-                        startThinkingAnimation(npcInstanceId, npcEntityRef, hologramRef, world);
+                // Check if indicator already exists (atomic on world thread)
+                Ref<EntityStore> existingRef = thinkingIndicatorRefs.get(npcInstanceId);
+                if (existingRef != null) {
+                    if (existingRef.isValid()) {
+                        // Reuse existing indicator
+                        logger.debug("[Hycompanion] Reusing existing thinking indicator for NPC: " + npcInstanceId);
+                        restartThinkingAnimation(npcInstanceId, existingRef);
                     } else {
-                        logger.warn("[Hycompanion] Failed to get hologram reference after spawn");
+                        // Invalid ref, remove it
+                        thinkingIndicatorRefs.remove(npcInstanceId);
+                        // Try again (will spawn new one)
+                        spawnThinkingIndicator(npcInstanceId, npcEntityRef, world);
                     }
-
-                } catch (Exception e) {
-                    logger.error("[Hycompanion] Error showing thinking indicator: " + e.getMessage());
-                    e.printStackTrace();
+                    return;
                 }
+
+                // No indicator exists, spawn new one
+                spawnThinkingIndicator(npcInstanceId, npcEntityRef, world);
             });
         } catch (java.util.concurrent.RejectedExecutionException e) {
-            // World executor rejected task - server shutting down
             logger.debug("[Hycompanion] Could not show thinking indicator - world shutting down");
         }
+    }
+
+    /**
+     * Spawn a new thinking indicator for an NPC.
+     * Must be called on the world thread.
+     */
+    private void spawnThinkingIndicator(UUID npcInstanceId, Ref<EntityStore> npcEntityRef, World world) {
+        try {
+            Store<EntityStore> store = npcEntityRef.getStore();
+            if (store == null) {
+                return;
+            }
+
+            TransformComponent npcTransform = store.getComponent(npcEntityRef,
+                    TransformComponent.getComponentType());
+            if (npcTransform == null) {
+                return;
+            }
+
+            Vector3d npcPos = npcTransform.getPosition();
+            Vector3d hologramPos = new Vector3d(npcPos.getX(), npcPos.getY() + THINKING_HOLOGRAM_Y_OFFSET,
+                    npcPos.getZ());
+            Vector3f hologramRotation = new Vector3f(0, 0, 0);
+
+            // Create hologram entity
+            Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
+            ProjectileComponent projectileComponent = new ProjectileComponent("Projectile");
+            holder.putComponent(ProjectileComponent.getComponentType(), projectileComponent);
+            holder.putComponent(TransformComponent.getComponentType(),
+                    new TransformComponent(hologramPos, hologramRotation));
+            holder.ensureComponent(UUIDComponent.getComponentType());
+            holder.ensureComponent(Intangible.getComponentType());
+            if (projectileComponent.getProjectile() == null) {
+                projectileComponent.initialize();
+            }
+            holder.addComponent(NetworkId.getComponentType(),
+                    new NetworkId(world.getEntityStore().getStore().getExternalData().takeNextNetworkId()));
+            Nameplate nameplate = new Nameplate(THINKING_STATES[0]);
+            holder.addComponent(Nameplate.getComponentType(), nameplate);
+
+            Ref<EntityStore> hologramRef = world.getEntityStore().getStore().addEntity(holder, AddReason.SPAWN);
+
+            if (hologramRef != null && hologramRef.isValid()) {
+                // Store the hologram reference
+                thinkingIndicatorRefs.put(npcInstanceId, hologramRef);
+
+                logger.info("[Hycompanion] Thinking indicator spawned for NPC: " + npcInstanceId +
+                        " at " + hologramPos.getX() + ", " + hologramPos.getY() + ", " + hologramPos.getZ());
+
+                startThinkingAnimation(npcInstanceId, npcEntityRef, hologramRef, world);
+            } else {
+                logger.warn("[Hycompanion] Failed to get hologram reference after spawn");
+            }
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error spawning thinking indicator: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Restart the thinking animation for an existing indicator.
+     * Must be called on the world thread.
+     */
+    private void restartThinkingAnimation(UUID npcInstanceId, Ref<EntityStore> hologramRef) {
+        // Get the NPC entity ref for position tracking
+        NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
+        if (npcInstanceData == null || npcInstanceData.entityRef() == null) {
+            return;
+        }
+        
+        World world = getWorldForHologram(hologramRef, npcInstanceId);
+        if (world == null) {
+            return;
+        }
+
+        // Reset the text to initial state (already on world thread)
+        try {
+            if (hologramRef.isValid()) {
+                Store<EntityStore> store = hologramRef.getStore();
+                if (store != null) {
+                    Nameplate nameplate = store.getComponent(hologramRef, Nameplate.getComponentType());
+                    if (nameplate != null) {
+                        nameplate.setText(THINKING_STATES[0]);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("[Hycompanion] Error resetting thinking text: " + e.getMessage());
+        }
+
+        // Start/restart the animation
+        startThinkingAnimation(npcInstanceId, npcInstanceData.entityRef(), hologramRef, world);
     }
 
     /**
@@ -3956,7 +4177,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Collect UUIDs of currently tracked holograms to avoid removing active ones
         // (This allows safe execution even if called while plugin is active)
         Set<UUID> validHologramUuids = new HashSet<>();
-        for (Ref<EntityStore> ref : thinkingHologramEntities.values()) {
+        for (Ref<EntityStore> ref : thinkingIndicatorRefs.values()) {
             if (ref != null && ref.isValid()) {
                 try {
                     Store<EntityStore> store = ref.getStore();
@@ -4094,29 +4315,48 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Cancel animation task first
         cancelThinkingAnimation(npcInstanceId);
 
-        // [Shutdown Fix] During shutdown, don't try to remove entities from the world.
-        // Just clear our tracking reference - Hytale's shutdown handles entity cleanup.
+        // Get the hologram reference
+        final Ref<EntityStore> hologramRef = thinkingIndicatorRefs.get(npcInstanceId);
+        if (hologramRef == null || !hologramRef.isValid()) {
+            return;
+        }
+
+        // [Shutdown Fix] During shutdown, don't try to modify entities
         if (isShuttingDown()) {
-            thinkingHologramEntities.remove(npcInstanceId);
-            logger.debug("[Hycompanion] Skipping thinking indicator removal during shutdown: " + npcInstanceId);
+            logger.debug("[Hycompanion] Skipping thinking indicator hide during shutdown: " + npcInstanceId);
             return;
         }
 
-        // Remove hologram entity
-        Ref<EntityStore> hologramRef = thinkingHologramEntities.remove(npcInstanceId);
-        if (hologramRef == null) {
-            // No hologram to remove - this is normal if hideThinkingIndicator is called
-            // when no indicator was shown
-            return;
+        // Instead of removing the entity, just clear the text
+        // This allows reusing the indicator for subsequent thinking states
+        World world = getWorldForHologram(hologramRef, npcInstanceId);
+        if (world != null) {
+            try {
+                world.execute(() -> {
+                    try {
+                        if (hologramRef.isValid()) {
+                            Store<EntityStore> store = hologramRef.getStore();
+                            if (store != null) {
+                                Nameplate nameplate = store.getComponent(hologramRef, Nameplate.getComponentType());
+                                if (nameplate != null) {
+                                    nameplate.setText("");
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        logger.debug("[Hycompanion] Error hiding thinking hologram: " + e.getMessage());
+                    }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException e) {
+                logger.debug("[Hycompanion] Could not hide thinking indicator - world shutting down");
+            }
         }
+    }
 
-        if (!hologramRef.isValid()) {
-            logger.debug("[Hycompanion] Thinking hologram reference already invalid for NPC: " + npcInstanceId);
-            return;
-        }
-
-        // Remove entity on world thread
-        // Try to get the world from the hologram's store first, then fall back to NPC's world, then default
+    /**
+     * Get the world for a hologram entity, falling back to NPC's world and default world.
+     */
+    private World getWorldForHologram(Ref<EntityStore> hologramRef, UUID npcInstanceId) {
         World world = null;
         if (hologramRef.isValid()) {
             try {
@@ -4138,7 +4378,33 @@ public class HytaleServerAdapter implements HytaleAPI {
         if (world == null) {
             world = Universe.get().getDefaultWorld();
         }
-        
+        return world;
+    }
+
+    /**
+     * Destroy the thinking indicator entity for an NPC.
+     * Used for zombie cleanup and when NPC is removed.
+     */
+    public void destroyThinkingIndicator(UUID npcInstanceId) {
+        logger.debug("[Hycompanion] Destroying thinking indicator for NPC: " + npcInstanceId);
+
+        // Cancel animation task
+        cancelThinkingAnimation(npcInstanceId);
+
+        // Get and remove the hologram reference
+        final Ref<EntityStore> hologramRef = thinkingIndicatorRefs.remove(npcInstanceId);
+
+        // [Shutdown Fix] During shutdown, don't try to remove entities
+        if (isShuttingDown()) {
+            logger.debug("[Hycompanion] Skipping thinking indicator destruction during shutdown: " + npcInstanceId);
+            return;
+        }
+
+        if (hologramRef == null || !hologramRef.isValid()) {
+            return;
+        }
+
+        World world = getWorldForHologram(hologramRef, npcInstanceId);
         if (world != null) {
             try {
                 world.execute(() -> {
@@ -4147,16 +4413,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                             Store<EntityStore> store = hologramRef.getStore();
                             if (store != null) {
                                 store.removeEntity(hologramRef, com.hypixel.hytale.component.RemoveReason.REMOVE);
-                                logger.info("[Hycompanion] Thinking indicator removed for NPC: " + npcInstanceId);
+                                logger.info("[Hycompanion] Thinking indicator destroyed for NPC: " + npcInstanceId);
                             }
                         }
                     } catch (Exception e) {
-                        logger.debug("[Hycompanion] Error removing thinking hologram: " + e.getMessage());
+                        logger.debug("[Hycompanion] Error destroying thinking hologram: " + e.getMessage());
                     }
                 });
             } catch (java.util.concurrent.RejectedExecutionException e) {
-                // World executor rejected task - server shutting down, this is expected
-                logger.debug("[Hycompanion] Could not remove thinking indicator - world shutting down");
+                logger.debug("[Hycompanion] Could not destroy thinking indicator - world shutting down");
             }
         }
     }
@@ -4234,14 +4499,12 @@ public class HytaleServerAdapter implements HytaleAPI {
         stepStart = System.currentTimeMillis();
         int npcCount = npcInstanceEntities.size();
         int targetCount = movementTargetEntities.size();
-        int hologramCount = thinkingHologramEntities.size();
         int busyCount = busyNpcs.size();
         int spawnLocCount = npcSpawnLocations.size();
         int pendingRespawnCount = pendingRespawns.size();
 
         npcInstanceEntities.clear();
         movementTargetEntities.clear();
-        thinkingHologramEntities.clear();
         busyNpcs.clear();
         npcSpawnLocations.clear();
         pendingRespawns.clear();
@@ -4253,7 +4516,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         logger.info("[Hycompanion] Cleared " + npcCount + " NPCs, " + targetCount + " targets, " +
-                hologramCount + " holograms, " + busyCount + " busy flags, " +
+                busyCount + " busy flags, " +
                 spawnLocCount + " spawn locations, " + pendingRespawnCount + " pending respawns in " +
                 (System.currentTimeMillis() - stepStart) + "ms");
 

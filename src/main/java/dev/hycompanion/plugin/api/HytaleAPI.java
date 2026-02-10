@@ -66,6 +66,17 @@ public interface HytaleAPI {
             UUID npcId, int radius);
 
     /**
+     * Scan surroundings and return all entities with their details.
+     * Excludes the scanning NPC itself.
+     * 
+     * @param npcId  NPC's instance ID (scan center and exclusion)
+     * @param radius Scan radius in blocks
+     * @return Map containing current_position, radius, entities array, totalEntities
+     */
+    CompletableFuture<Optional<Map<String, Object>>> scanEntities(
+            UUID npcId, int radius);
+
+    /**
      * Get list of online players
      */
     List<GamePlayer> getOnlinePlayers();

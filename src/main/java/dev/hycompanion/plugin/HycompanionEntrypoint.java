@@ -28,10 +28,7 @@ import dev.hycompanion.plugin.role.RoleGenerator;
 import dev.hycompanion.plugin.shutdown.ShutdownManager;
 import dev.hycompanion.plugin.systems.NpcRespawnSystem;
 import dev.hycompanion.plugin.utils.PluginLogger;
-import io.sentry.DataCategory;
 import io.sentry.Sentry;
-import io.sentry.clientreport.DiscardReason;
-
 import javax.annotation.Nonnull;
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,7 +37,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * Hycompanion Plugin Entry Point for Hytale Server
@@ -49,12 +45,12 @@ import java.util.UUID;
  * when the plugin is loaded by a real Hytale server.
  * 
  * @author Hycompanion Team
- * @version 1.1.2
+ * @version 1.1.3
  */
 public class HycompanionEntrypoint extends JavaPlugin {
 
     private static final HytaleLogger HYTALE_LOGGER = HytaleLogger.forEnclosingClass();
-    public static final String VERSION = "1.1.2-SNAPSHOT";
+    public static final String VERSION = "1.1.3-SNAPSHOT";
 
     // Plugin components
     private PluginLogger logger;
