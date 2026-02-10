@@ -1470,6 +1470,11 @@ public class HytaleServerAdapter implements HytaleAPI {
                             var blockType = blockTypeAssetMap.getAsset(blockId);
                             String foundTypeName = blockType != null ? blockType.getId() : tag;
 
+                            // Ignore blocks with "Leaves_" in their ID
+                            if (foundTypeName != null && foundTypeName.contains("Leaves_")) {
+                                continue;
+                            }
+
                             // Found it!
                             Map<String, Object> result = new HashMap<>();
                             result.put("found", true);
@@ -1496,6 +1501,194 @@ public class HytaleServerAdapter implements HytaleAPI {
         });
 
         return future;
+    }
+
+    @Override
+    public CompletableFuture<Optional<Map<String, Object>>> scanBlocks(UUID npcInstanceId, int radius) {
+        CompletableFuture<Optional<Map<String, Object>>> future = new CompletableFuture<>();
+
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            future.complete(Optional.empty());
+            return future;
+        }
+
+        // Get the correct world for this NPC
+        String worldName = npcData.spawnLocation() != null ? npcData.spawnLocation().world() : null;
+        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
+        if (resolvedWorld == null) {
+            resolvedWorld = Universe.get().getDefaultWorld();
+            logger.warn("[Hycompanion] scanBlocks: Could not find world '" + worldName + "' for NPC, falling back to default world");
+        }
+        if (resolvedWorld == null) {
+            future.complete(Optional.empty());
+            return future;
+        }
+        final World world = resolvedWorld;
+
+        world.execute(() -> {
+            try {
+                // Get NPC current position
+                Ref<EntityStore> ref = npcData.entityRef();
+                if (!ref.isValid()) {
+                    future.complete(Optional.empty());
+                    return;
+                }
+                Store<EntityStore> store = ref.getStore();
+                TransformComponent transform = store.getComponent(ref, TransformComponent.getComponentType());
+                if (transform == null) {
+                    future.complete(Optional.empty());
+                    return;
+                }
+                Vector3d pos = transform.getPosition();
+                int startX = (int) Math.floor(pos.getX());
+                int startY = (int) Math.floor(pos.getY());
+                int startZ = (int) Math.floor(pos.getZ());
+
+                var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType
+                        .getAssetMap();
+                if (blockTypeAssetMap == null) {
+                    logger.debug("BlockType asset map is null");
+                    future.complete(Optional.empty());
+                    return;
+                }
+
+                // Data structures to track found blocks
+                // Map<blockId, BlockScanInfo>
+                Map<String, BlockScanInfo> foundBlocks = new HashMap<>();
+                Map<String, Set<String>> categoryToBlockIds = new HashMap<>();
+
+                // Spiral Search
+                com.hypixel.hytale.math.iterator.SpiralIterator iterator = new com.hypixel.hytale.math.iterator.SpiralIterator(
+                        startX, startZ, radius);
+
+                while (iterator.hasNext()) {
+                    long packedPos = iterator.next();
+                    int x = com.hypixel.hytale.math.util.MathUtil.unpackLeft(packedPos);
+                    int z = com.hypixel.hytale.math.util.MathUtil.unpackRight(packedPos);
+
+                    // Optimization: Check if chunk is loaded first
+                    com.hypixel.hytale.server.core.universe.world.chunk.WorldChunk chunk = world
+                            .getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z));
+                    if (chunk == null)
+                        continue;
+
+                    // Scan Y range (NPC height +/- 10 blocks)
+                    for (int y = Math.max(0, startY - 10); y <= Math.min(255, startY + 10); y++) {
+                        int blockIdInt = chunk.getBlock(x, y, z);
+                        var blockType = blockTypeAssetMap.getAsset(blockIdInt);
+                        if (blockType == null) continue;
+                        
+                        String blockId = blockType.getId();
+                        if (blockId == null || blockId.isEmpty()) continue;
+
+                        // Calculate distance
+                        double distance = Math.sqrt(
+                            Math.pow(x - startX, 2) + 
+                            Math.pow(y - startY, 2) + 
+                            Math.pow(z - startZ, 2)
+                        );
+
+                        // Update or create block scan info
+                        BlockScanInfo info = foundBlocks.computeIfAbsent(blockId, id -> {
+                            String displayName = formatBlockIdAsDisplayName(id);
+                            List<String> materialTypes = dev.hycompanion.plugin.core.world.BlockClassifier
+                                    .getMaterialTypes(id, displayName);
+                            return new BlockScanInfo(id, displayName, materialTypes);
+                        });
+
+                        // Update count
+                        info.count++;
+
+                        // Update nearest if this is closer
+                        if (distance < info.nearestDistance) {
+                            info.nearestDistance = distance;
+                            info.nearestX = x;
+                            info.nearestY = y;
+                            info.nearestZ = z;
+                        }
+
+                        // Add to category mapping (normalize "misc" to "other")
+                        for (String materialType : info.materialTypes) {
+                            String normalizedCategory = "misc".equals(materialType) ? "other" : materialType;
+                            categoryToBlockIds.computeIfAbsent(normalizedCategory, k -> new HashSet<>()).add(blockId);
+                        }
+                    }
+                }
+
+                // Build response
+                Map<String, Object> result = new HashMap<>();
+                result.put("current_position", Map.of("x", startX, "y", startY, "z", startZ));
+                result.put("radius", radius);
+                
+                // Build categories map
+                Map<String, Map<String, Object>> categories = new HashMap<>();
+                for (Map.Entry<String, Set<String>> entry : categoryToBlockIds.entrySet()) {
+                    String category = entry.getKey();
+                    Set<String> blockIds = entry.getValue();
+                    
+                    Map<String, Object> categoryInfo = new HashMap<>();
+                    categoryInfo.put("blockIds", new ArrayList<>(blockIds));
+                    categoryInfo.put("count", blockIds.size());
+                    categories.put(category, categoryInfo);
+                }
+                result.put("categories", categories);
+
+                // Build blocks map (grouped by blockId with nearest coordinates)
+                Map<String, Map<String, Object>> blocks = new HashMap<>();
+                for (BlockScanInfo info : foundBlocks.values()) {
+                    Map<String, Object> blockInfo = new HashMap<>();
+                    blockInfo.put("displayName", info.displayName);
+                    // Normalize "misc" to "other" for better LLM comprehension
+                    String primaryCategory = info.materialTypes.isEmpty() ? "other" : info.materialTypes.get(0);
+                    if ("misc".equals(primaryCategory)) {
+                        primaryCategory = "other";
+                    }
+                    blockInfo.put("category", primaryCategory);
+                    // Also normalize "misc" to "other" in the categories list
+                    List<String> normalizedCategories = info.materialTypes.stream()
+                        .map(cat -> "misc".equals(cat) ? "other" : cat)
+                        .toList();
+                    blockInfo.put("categories", normalizedCategories);
+                    blockInfo.put("count", info.count);
+                    blockInfo.put("nearest", Map.of(
+                        "coordinates", Map.of("x", info.nearestX, "y", info.nearestY, "z", info.nearestZ),
+                        "distance", Math.round(info.nearestDistance * 100.0) / 100.0
+                    ));
+                    blocks.put(info.blockId, blockInfo);
+                }
+                result.put("blocks", blocks);
+                result.put("totalUniqueBlocks", foundBlocks.size());
+
+                logger.debug("Scan complete: found " + foundBlocks.size() + " unique block types in radius " + radius);
+                future.complete(Optional.of(result));
+
+            } catch (Exception e) {
+                logger.error("Error in scanBlocks: " + e.getMessage());
+                Sentry.captureException(e);
+                future.complete(Optional.empty());
+            }
+        });
+
+        return future;
+    }
+
+    /**
+     * Helper class to track scan information for a block type
+     */
+    private static class BlockScanInfo {
+        final String blockId;
+        final String displayName;
+        final List<String> materialTypes;
+        int count = 0;
+        double nearestDistance = Double.MAX_VALUE;
+        int nearestX, nearestY, nearestZ;
+
+        BlockScanInfo(String blockId, String displayName, List<String> materialTypes) {
+            this.blockId = blockId;
+            this.displayName = displayName;
+            this.materialTypes = materialTypes;
+        }
     }
 
     @Override

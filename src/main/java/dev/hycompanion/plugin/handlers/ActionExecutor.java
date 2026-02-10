@@ -153,6 +153,7 @@ public class ActionExecutor {
                         ack.call("{\"status\": \"success\"}");
                 }
                 case "find_block" -> executeFindBlock(npcInstanceData, params, ack);
+                case "scan_blocks" -> executeScanBlocks(npcInstanceData, params, ack);
                 case "find_entity" -> executeFindEntity(npcInstanceData, params, ack);
                 case "get_current_position" -> executeGetCurrentPosition(npcInstanceData, ack);
                 case "wait" -> executeWait(npcInstanceData, params, ack);
@@ -205,6 +206,29 @@ public class ActionExecutor {
             logger.error("Error finding block: " + e.getMessage());
             Sentry.captureException(e);
             ack.call("{\"error\": \"Internal error searching for block\"}");
+            return null;
+        });
+    }
+
+    /**
+     * SCAN_BLOCKS - Scan surroundings and return all unique block types with nearest coordinates
+     */
+    private void executeScanBlocks(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (params == null || ack == null)
+            return;
+
+        int radius = params.optInt("radius", 16);
+
+        hytaleAPI.scanBlocks(npcInstanceData.entityUuid(), radius).thenAccept(result -> {
+            if (result.isPresent()) {
+                ack.call(new JSONObject(result.get()).toString());
+            } else {
+                ack.call("{\"blocks\": {}, \"radius\": " + radius + ", \"totalUniqueBlocks\": 0}");
+            }
+        }).exceptionally(e -> {
+            logger.error("Error scanning blocks: " + e.getMessage());
+            Sentry.captureException(e);
+            ack.call("{\"error\": \"Internal error scanning blocks\"}");
             return null;
         });
     }

@@ -55,6 +55,17 @@ public interface HytaleAPI {
             UUID npcId,  String name, int radius);
 
     /**
+     * Scan surroundings and return all unique block types with nearest coordinates.
+     * Groups results by category, with each blockId having its nearest position.
+     * 
+     * @param npcId  NPC's instance ID (scan center)
+     * @param radius Scan radius in blocks
+     * @return Map containing current_position, radius, categories, blocks, totalUniqueBlocks
+     */
+    CompletableFuture<Optional<Map<String, Object>>> scanBlocks(
+            UUID npcId, int radius);
+
+    /**
      * Get list of online players
      */
     List<GamePlayer> getOnlinePlayers();

@@ -619,12 +619,30 @@ public class SocketManager {
 
             switch (syncAction) {
                 case "bulk_create" -> {
+                    // Capture NPCs that were registered BEFORE this sync (from cache/persistence)
+                    // These are the candidates for orphan cleanup
+                    java.util.Set<String> preSyncNpcIds = new java.util.HashSet<>();
+                    for (dev.hycompanion.plugin.core.npc.NpcData npc : npcManager.getAllNpcs()) {
+                        preSyncNpcIds.add(npc.externalId());
+                    }
+                    
                     // Handle batch NPC sync for lower latency
                     org.json.JSONArray npcsArray = json.getJSONArray("npcs");
+                    java.util.Set<String> validExternalIds = new java.util.HashSet<>();
+                    
                     for (int i = 0; i < npcsArray.length(); i++) {
-                        handleNpcCreateOrUpdate(npcsArray.getJSONObject(i));
+                        org.json.JSONObject npcJson = npcsArray.getJSONObject(i);
+                        handleNpcCreateOrUpdate(npcJson);
+                        // Collect valid external IDs for orphan cleanup
+                        if (npcJson.has("externalId")) {
+                            validExternalIds.add(npcJson.getString("externalId"));
+                        }
                     }
                     logger.info("Bulk synced " + npcsArray.length() + " NPCs");
+                    
+                    // Clean up orphaned Hycompanion NPCs that are no longer in the backend
+                    // Pass the pre-sync NPC IDs so we only cleanup NPCs that were previously registered
+                    cleanupOrphanedNpcs(preSyncNpcIds, validExternalIds);
 
                     // Trigger entity discovery after reconnection bulk sync
                     if (isReconnection.compareAndSet(true, false) && onReconnectSyncComplete != null) {
@@ -734,6 +752,57 @@ public class SocketManager {
 
         } catch (Exception e) {
             logger.error("Failed to delete NPC", e);
+            Sentry.captureException(e);
+        }
+    }
+
+    /**
+     * Clean up orphaned Hycompanion NPCs that are no longer in the backend.
+     * This is called after bulk_create sync to remove NPCs that were deleted
+     * from the dashboard while the server was offline.
+     * 
+     * Only Hycompanion-managed NPCs are cleaned up - other NPCs in the world
+     * are left untouched.
+     * 
+     * @param preSyncNpcIds Set of external IDs that were registered before this sync (from cache)
+     * @param validExternalIds Set of external IDs that exist in the backend
+     */
+    private void cleanupOrphanedNpcs(java.util.Set<String> preSyncNpcIds, java.util.Set<String> validExternalIds) {
+        try {
+            // Only check NPCs that existed before this sync - these are candidates for cleanup
+            // Newly registered NPCs from the current bulk_create are not considered orphans
+            int cleanupCount = 0;
+            for (String externalId : preSyncNpcIds) {
+                // If this pre-existing NPC is not in the valid list from backend, it's orphaned
+                if (!validExternalIds.contains(externalId)) {
+                    // Get NPC data for logging before cleanup
+                    java.util.Optional<dev.hycompanion.plugin.core.npc.NpcData> npcOpt = npcManager.getNpc(externalId);
+                    String npcName = npcOpt.map(dev.hycompanion.plugin.core.npc.NpcData::name).orElse(externalId);
+                    
+                    logger.info("[Sync] Cleaning up orphaned NPC: " + externalId + " (" + npcName + ")");
+                    
+                    // Unregister from NpcManager (despawns instances)
+                    npcManager.unregisterNpc(externalId);
+                    
+                    // Remove from config cache
+                    npcConfigManager.removeNpc(externalId);
+                    
+                    // Remove role files
+                    if (roleGenerator != null) {
+                        roleGenerator.removeRole(externalId);
+                    }
+                    
+                    cleanupCount++;
+                }
+            }
+            
+            if (cleanupCount > 0) {
+                logger.info("[Sync] Cleaned up " + cleanupCount + " orphaned NPC(s)");
+            } else if (!preSyncNpcIds.isEmpty()) {
+                logger.debug("[Sync] No orphaned NPCs to cleanup (" + preSyncNpcIds.size() + " pre-existing NPCs checked)");
+            }
+        } catch (Exception e) {
+            logger.error("[Sync] Failed to cleanup orphaned NPCs", e);
             Sentry.captureException(e);
         }
     }

@@ -406,6 +406,12 @@ public class MockHytaleAdapter implements HytaleAPI {
     }
 
     @Override
+    public CompletableFuture<Optional<Map<String, Object>>> scanBlocks(UUID npcId, int radius) {
+        // TODO Auto-generated method stub
+        throw new UnsupportedOperationException("Unimplemented method 'scanBlocks'");
+    }
+
+    @Override
     public CompletableFuture<Optional<Map<String, Object>>> findEntity(UUID npcId, String name,
             int radius) {
         // TODO Auto-generated method stub
