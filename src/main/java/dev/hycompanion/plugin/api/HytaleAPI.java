@@ -130,6 +130,22 @@ public interface HytaleAPI {
      */
     void sendErrorMessage(String playerId, String message);
 
+    /**
+     * Broadcast a debug message to all OP (operator) players on the server.
+     * This is used to show detailed error information only to server administrators.
+     * 
+     * @param message The debug message to display (will be shown in red)
+     */
+    void broadcastDebugMessageToOps(String message);
+
+    /**
+     * Check if a player is an operator (OP).
+     * 
+     * @param playerId The player's ID
+     * @return true if the player is an operator
+     */
+    boolean isPlayerOp(String playerId);
+
     // ========== NPC Operations ==========
 
     /**

@@ -158,6 +158,7 @@ public class ActionExecutor {
                 // case "find_entity" -> executeFindEntity(npcInstanceData, params, ack); // Deprecated
                 case "get_current_position" -> executeGetCurrentPosition(npcInstanceData, ack);
                 case "wait" -> executeWait(npcInstanceData, params, ack);
+                case "teleport_player" -> executeTeleportPlayer(npcInstanceData, playerId, params, ack);
                 default -> {
                     logger.warn("Unknown action received: " + action);
                     if (ack != null)
@@ -687,6 +688,65 @@ public class ActionExecutor {
 
         if (config.logging().logActions()) {
             logger.info("[NPC:" + npcInstanceId + "] wait: " + duration + "ms");
+        }
+    }
+
+    /**
+     * TELEPORT_PLAYER - Teleport a player to specific coordinates
+     */
+    private void executeTeleportPlayer(NpcInstanceData npcInstanceData, String playerId, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        if (playerId == null || playerId.isEmpty()) {
+            logger.warn("Teleport player action without playerId for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"error\": \"No player specified\"}");
+            return;
+        }
+
+        if (params == null) {
+            logger.warn("Teleport player action without params for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"error\": \"Missing parameters\"}");
+            return;
+        }
+
+        String locationName = params.optString("locationName", "Unknown");
+        String worldName = params.optString("worldName", "default");
+        double x = params.optDouble("x", 0);
+        double y = params.optDouble("y", 0);
+        double z = params.optDouble("z", 0);
+
+        logger.info("Trying to teleport player action: " + locationName + " in world " + worldName + " at " + x + ", " + y + ", " + z);
+
+        Location destination = Location.of(x, y, z, worldName);
+
+        // Teleport the player
+        boolean success = hytaleAPI.teleportPlayerTo(playerId, destination);
+
+        // Send chat message to player confirming teleport
+        if (success) {
+            String message = "You have been teleported to " + locationName + ".";
+            hytaleAPI.sendMessage(playerId, message);
+        }
+
+        if (ack != null) {
+            org.json.JSONObject response = new org.json.JSONObject();
+            response.put("success", success);
+            if (!success) {
+                response.put("error", "Failed to teleport player");
+            }
+            ack.call(response);
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] teleport player [" + playerId + "] to " + locationName + 
+                    " (" + x + ", " + y + ", " + z + "): " + (success ? "SUCCESS" : "FAILED"));
         }
     }
 }

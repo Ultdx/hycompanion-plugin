@@ -86,6 +86,17 @@ public class MockHytaleAdapter implements HytaleAPI {
         logger.warn("[MOCK] [ERROR] Sending error message to player [" + playerId + "]: " + message);
     }
 
+    @Override
+    public void broadcastDebugMessageToOps(String message) {
+        logger.warn("[MOCK] [DEBUG] Broadcasting to OPs: " + message);
+    }
+
+    @Override
+    public boolean isPlayerOp(String playerId) {
+        // In mock, consider all players as OP for testing purposes
+        return mockPlayers.containsKey(playerId);
+    }
+
     // ========== NPC Operations ==========
 
     @Override

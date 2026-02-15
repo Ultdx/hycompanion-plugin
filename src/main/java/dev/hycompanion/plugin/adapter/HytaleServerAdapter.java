@@ -383,6 +383,66 @@ public class HytaleServerAdapter implements HytaleAPI {
         });
     }
 
+    @Override
+    public void broadcastDebugMessageToOps(String message) {
+        if (message == null || message.isEmpty()) {
+            return;
+        }
+
+        // Get all online players and filter for OPs
+        List<GamePlayer> onlinePlayers = getOnlinePlayers();
+        if (onlinePlayers.isEmpty()) {
+            return;
+        }
+
+        // Send red debug message to all OP players
+        for (GamePlayer player : onlinePlayers) {
+            if (isPlayerOp(player.id())) {
+                sendErrorMessage(player.id(), "[Hycompanion Debug] " + message);
+            }
+        }
+
+        logger.debug("[Debug] Broadcast to OPs: " + message);
+    }
+
+    @Override
+    public boolean isPlayerOp(String playerId) {
+        try {
+            UUID uuid = UUID.fromString(playerId);
+            PlayerRef playerRef = Universe.get().getPlayer(uuid);
+            if (playerRef == null) {
+                return false;
+            }
+            
+            // Get the Player component from the entity to check permissions
+            // Player implements PermissionHolder interface
+            Ref<EntityStore> ref = playerRef.getReference();
+            if (ref == null || !ref.isValid()) {
+                return false;
+            }
+            
+            Store<EntityStore> store = ref.getStore();
+            com.hypixel.hytale.server.core.entity.entities.Player player = 
+                store.getComponent(ref, com.hypixel.hytale.server.core.entity.entities.Player.getComponentType());
+            
+            if (player == null) {
+                return false;
+            }
+            
+            // Check if player has operator privileges using the permission system
+            // "*" is the wildcard permission that typically indicates OP status
+            // Also check for the specific hycompanion.admin permission
+            return player.hasPermission("*") || player.hasPermission("hycompanion.admin");
+        } catch (IllegalArgumentException e) {
+            logger.debug("Invalid UUID format for player ID: " + playerId);
+            return false;
+        } catch (Exception e) {
+            logger.debug("Error checking OP status for player: " + playerId + " - " + e.getMessage());
+            Sentry.captureException(e);
+            return false;
+        }
+    }
+
     // ========== NPC Operations ==========
 
     @Override
@@ -2065,6 +2125,38 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         Ref<EntityStore> entityRef = npcInstanceData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return Optional.empty();
+        }
+
+        // Get the world directly from the entity's store.
+        // getExternalData() doesn't require being on the store's thread, so we can
+        // safely get the world from any thread. This ensures we execute on the correct
+        // world thread for this specific entity.
+        World entityWorld;
+        try {
+            Store<EntityStore> store = entityRef.getStore();
+            entityWorld = store.getExternalData().getWorld();
+            // logger.debug("[getNpcInstanceLocation] NPC " + npcInstanceId + " store world: " + 
+            //     (entityWorld != null ? entityWorld.getName() : "null") + 
+            //     ", spawnLocation world: " + 
+            //     (npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : "null"));
+        } catch (Exception e) {
+            logger.debug("[getNpcInstanceLocation] Could not get NPC world from store for " + npcInstanceId + ": " + e.getMessage());
+            return Optional.empty();
+        }
+
+        if (entityWorld == null) {
+            logger.debug("[getNpcInstanceLocation] NPC entity world is null for " + npcInstanceId);
+            return Optional.empty();
+        }
+
+        // Check if the world has players - if not, the world may not be ticking
+        // and tasks won't be processed. In this case, we can't get the location.
+        if (entityWorld.getPlayerCount() == 0) {
+            logger.debug("[getNpcInstanceLocation] World " + entityWorld.getName() + " has no players, skipping location check for NPC " + npcInstanceId);
+            return Optional.empty();
+        }
 
         // Location extraction logic - MUST run on WorldThread due to Hytale ECS
         // thread-safety
@@ -2076,20 +2168,25 @@ public class HytaleServerAdapter implements HytaleAPI {
                             TransformComponent.getComponentType());
                     if (transform != null) {
                         Vector3d pos = transform.getPosition();
-                        World entityWorld = store.getExternalData().getWorld();
-                        String worldName = entityWorld != null ? entityWorld.getName() : "world";
+                        World world = store.getExternalData().getWorld();
+                        String worldName = world != null ? world.getName() : "world";
                         return Optional.of(new Location(pos.getX(), pos.getY(), pos.getZ(), worldName));
+                    } else {
+                        logger.debug("[getNpcInstanceLocation] TransformComponent is null for NPC " + npcInstanceId);
                     }
                 } catch (Exception e) {
-                    logger.debug("Could not get NPC transform: " + e.getMessage());
+                    logger.debug("[getNpcInstanceLocation] Could not get NPC transform for " + npcInstanceId + ": " + e.getMessage());
                 }
+            } else {
+                logger.debug("[getNpcInstanceLocation] Entity ref is null or invalid for NPC " + npcInstanceId + 
+                    ", entityRef=" + entityRef + ", valid=" + (entityRef != null ? entityRef.isValid() : "N/A"));
             }
             return Optional.empty();
         };
 
         // Check if we are already on the correct WorldThread for this NPC
-        String expectedWorldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
         String currentThreadName = Thread.currentThread().getName();
+        String expectedWorldName = entityWorld.getName();
         if (currentThreadName.contains("WorldThread") && expectedWorldName != null && 
             currentThreadName.contains(expectedWorldName)) {
             // We're already on the correct world thread, can execute directly
@@ -2100,34 +2197,33 @@ public class HytaleServerAdapter implements HytaleAPI {
             return result;
         }
 
-        // Schedule on WorldThread and wait for result
+        // Schedule on the entity's actual WorldThread and wait for result
         try {
-            // Get the world from the NPC's spawn location, not the default world
-            // The NPC might be in a different world (e.g., "Arcana" vs "Lobby")
-            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
-            World world = worldName != null ? Universe.get().getWorld(worldName) : null;
-            
-            // Fallback to default world if specific world not found
-            if (world == null) {
-                world = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] getNpcInstanceLocation: Could not find world '" + worldName + "' for NPC, falling back to default world");
-            }
-            
-            if (world == null) {
-                return Optional.empty();
-            }
-
             CompletableFuture<Optional<Location>> future = new CompletableFuture<>();
             try {
-                world.execute(() -> future.complete(locationExtractor.get()));
+                entityWorld.execute(() -> {
+                    try {
+                        Optional<Location> loc = locationExtractor.get();
+                        if (loc.isEmpty()) {
+                            logger.debug("[getNpcInstanceLocation] Location extractor returned empty for NPC " + npcInstanceId + " on world " + entityWorld.getName());
+                        }
+                        future.complete(loc);
+                    } catch (Exception e) {
+                        logger.debug("[getNpcInstanceLocation] Exception in location extractor for NPC " + npcInstanceId + ": " + e.getMessage());
+                        future.completeExceptionally(e);
+                    }
+                });
             } catch (java.util.concurrent.RejectedExecutionException e) {
                 // World executor is shut down or full
-                logger.debug("World executor rejected location check task (Server shutting down?)");
+                logger.debug("[getNpcInstanceLocation] World executor rejected location check task for NPC " + npcInstanceId);
                 return Optional.empty();
             }
 
             // Wait up to 100ms for the result (was 25ms - too short for busy World threads)
             Optional<Location> result = future.get(100, TimeUnit.MILLISECONDS);
+            if (result.isEmpty()) {
+                logger.debug("[getNpcInstanceLocation] No result for NPC " + npcInstanceId + " after executing on " + entityWorld.getName());
+            }
             if (result.isPresent()) {
                 // Reset circuit breaker on success
                 consecutiveTimeouts.set(0);
@@ -2142,12 +2238,12 @@ public class HytaleServerAdapter implements HytaleAPI {
             // Handle timeout specifically for circuit breaker
             int timeouts = consecutiveTimeouts.incrementAndGet();
             if (timeouts <= 10) { // Reduce log spam
-                logger.debug("Timeout getting NPC location (" + timeouts + ")");
+                logger.debug("[getNpcInstanceLocation] Timeout getting NPC " + npcInstanceId + " location (" + timeouts + ")");
             }
             Sentry.captureException(e);
         } catch (Exception e) {
             // Other error
-            logger.debug("Could not get real-time location on world thread (error): " + e.getMessage());
+            logger.debug("[getNpcInstanceLocation] Could not get real-time location for NPC " + npcInstanceId + ": " + e.getMessage());
             Sentry.captureException(e);
         }
 
@@ -3688,8 +3784,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                 return false;
             }
 
-            World world = getWorldByName(location.world());
-            if (world == null) {
+            World targetWorld = getWorldByName(location.world());
+            if (targetWorld == null) {
                 logger.warn("[Hycompanion] Cannot teleport - World not found: " + location.world());
                 return false;
             }
@@ -3701,30 +3797,64 @@ public class HytaleServerAdapter implements HytaleAPI {
                 return false;
             }
 
-            // Execute teleport on world thread using Teleport component
-            world.execute(() -> {
+            // Get the player's current world UUID
+            UUID playerWorldUuid = playerRef.getWorldUuid();
+            if (playerWorldUuid == null) {
+                logger.warn("[Hycompanion] Cannot teleport - Player world UUID not available: " + playerId);
+                return false;
+            }
+
+            // Get the player's current world
+            World playerWorld = Universe.get().getWorld(playerWorldUuid);
+            if (playerWorld == null) {
+                logger.warn("[Hycompanion] Cannot teleport - Player world not found: " + playerWorldUuid);
+                return false;
+            }
+
+            // Get the player's store
+            Store<EntityStore> playerStore = entityRef.getStore();
+
+            // Capture rotation values on the player's current world thread using CompletableFuture
+            // This ensures we read the components on the correct thread
+            Vector3f[] bodyRotationHolder = new Vector3f[1];
+            Vector3f[] headRotationHolder = new Vector3f[1];
+
+            CompletableFuture<Void> rotationCaptureFuture = CompletableFuture.runAsync(() -> {
                 try {
-                    Store<EntityStore> store = entityRef.getStore();
-
                     // Get current transform to preserve rotation
-                    TransformComponent transform = store.getComponent(entityRef, TransformComponent.getComponentType());
-                    HeadRotation headRotation = store.getComponent(entityRef, HeadRotation.getComponentType());
+                    TransformComponent transform = playerStore.getComponent(entityRef, TransformComponent.getComponentType());
+                    HeadRotation headRotation = playerStore.getComponent(entityRef, HeadRotation.getComponentType());
 
-                    Vector3f currentBodyRotation = (transform != null) ? transform.getRotation()
-                            : new Vector3f(0, 0, 0);
-                    Vector3f currentHeadRotation = (headRotation != null) ? headRotation.getRotation()
-                            : new Vector3f(0, 0, 0);
+                    bodyRotationHolder[0] = (transform != null) ? transform.getRotation() : new Vector3f(0, 0, 0);
+                    headRotationHolder[0] = (headRotation != null) ? headRotation.getRotation() : new Vector3f(0, 0, 0);
+                } catch (Exception e) {
+                    logger.error("[Hycompanion] Error capturing player rotation: " + e.getMessage());
+                    // Use default rotations on error
+                    bodyRotationHolder[0] = new Vector3f(0, 0, 0);
+                    headRotationHolder[0] = new Vector3f(0, 0, 0);
+                }
+            }, playerWorld);
 
-                    // Create teleport destination
-                    Vector3d newPos = new Vector3d(location.x(), location.y(), location.z());
+            // Wait for the rotation capture to complete
+            rotationCaptureFuture.join();
 
-                    // Create Teleport component - this is how Hytale handles teleportation
-                    Teleport teleport = new Teleport(newPos, currentBodyRotation);
-                    teleport.setHeadRotation(currentHeadRotation);
+            Vector3f currentBodyRotation = bodyRotationHolder[0] != null ? bodyRotationHolder[0] : new Vector3f(0, 0, 0);
+            Vector3f currentHeadRotation = headRotationHolder[0] != null ? headRotationHolder[0] : new Vector3f(0, 0, 0);
 
+            // Create teleport destination
+            Vector3d newPos = new Vector3d(location.x(), location.y(), location.z());
+
+            // Create Teleport component with target world - this is how Hytale handles teleportation
+            // The world parameter allows cross-world teleportation
+            Teleport teleport = new Teleport(targetWorld, newPos, currentBodyRotation);
+            teleport.setHeadRotation(currentHeadRotation);
+
+            // Execute the teleport on the player's current world thread
+            // The Teleport component will handle moving the player to the target world
+            playerWorld.execute(() -> {
+                try {
                     // Add the Teleport component to the entity store
-                    store.addComponent(entityRef, Teleport.getComponentType(), teleport);
-
+                    playerStore.addComponent(entityRef, Teleport.getComponentType(), teleport);
                     logger.info("[Hycompanion] Player [" + playerId + "] teleported to " + location);
                 } catch (Exception e) {
                     logger.error("[Hycompanion] Error teleporting player: " + e.getMessage());
@@ -3762,19 +3892,24 @@ public class HytaleServerAdapter implements HytaleAPI {
             return Collections.emptyList();
         }
 
-        // Entity component access must happen on the WorldThread
-        // Get the correct world for this NPC, not the default world
-        String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
-        World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
-        if (resolvedWorld == null) {
-            resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] getAvailableAnimations: Could not find world '" + worldName + "' for NPC, falling back to default world");
-        }
-        if (resolvedWorld == null) {
-            logger.info("[Hycompanion] Cannot get animations - world not available");
+        // Get the world directly from the entity's store.
+        // getExternalData() doesn't require being on the store's thread.
+        World entityWorld;
+        try {
+            Store<EntityStore> store = entityRef.getStore();
+            entityWorld = store.getExternalData().getWorld();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Cannot get animations - failed to get NPC world: " + e.getMessage());
             return Collections.emptyList();
         }
-        final World world = resolvedWorld;
+
+        if (entityWorld == null) {
+            logger.info("[Hycompanion] Cannot get animations - NPC world is null");
+            return Collections.emptyList();
+        }
+
+        // Entity component access must happen on the WorldThread
+        final World world = entityWorld;
 
         java.util.concurrent.CompletableFuture<List<String>> future = new java.util.concurrent.CompletableFuture<>();
 

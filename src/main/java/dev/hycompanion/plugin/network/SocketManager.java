@@ -838,7 +838,7 @@ public class SocketManager {
             }
 
             // LLM errors - display red error message in player chat and abort operation
-            if ("LLM_ERROR".equals(code) && playerId != null && npcInstanceId != null) {
+            if ("LLM_ERROR".equals(code) && npcInstanceId != null) {
                 // Abort the current world operation for this NPC
                 if (chatHandler != null) {
                     chatHandler.abortOperation(npcInstanceId);
@@ -851,11 +851,32 @@ public class SocketManager {
                     npcName = npcOpt.get().name();
                 }
 
-                // Send red error message to player with the actual error details
-                // The error message from backend contains the actual error (e.g., "Error: 400 Provider returned error")
-                String errorMessage = "[" + npcName + "] Error: " + message;
-                actionExecutor.execute(npcInstanceId, playerId, "error_message",
-                        new org.json.JSONObject().put("message", errorMessage));
+                // Send user-facing error message to the player who triggered the error
+                if (playerId != null) {
+                    String errorMessage = "[" + npcName + "] " + message;
+                    actionExecutor.execute(npcInstanceId, playerId, "error_message",
+                            new org.json.JSONObject().put("message", errorMessage));
+                }
+
+                // Handle debug info for OP players (red message in chat)
+                if (json.has("debug")) {
+                    org.json.JSONObject debug = json.getJSONObject("debug");
+                    String errorType = debug.optString("type", "UNKNOWN");
+                    String details = debug.optString("details", "No details available");
+                    String suggestion = debug.optString("suggestion", "");
+
+                    // Build debug message for OP players
+                    StringBuilder debugMessage = new StringBuilder();
+                    debugMessage.append("[").append(npcName).append("] ");
+                    debugMessage.append("Error Type: ").append(errorType).append(" | ");
+                    debugMessage.append("Details: ").append(details);
+                    if (!suggestion.isEmpty()) {
+                        debugMessage.append(" | Suggestion: ").append(suggestion);
+                    }
+
+                    // Broadcast to all OP players
+                    hytaleAPI.broadcastDebugMessageToOps(debugMessage.toString());
+                }
             }
 
         } catch (Exception e) {
