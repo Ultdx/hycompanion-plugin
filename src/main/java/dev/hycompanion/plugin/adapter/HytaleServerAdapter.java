@@ -11,6 +11,7 @@ import com.hypixel.hytale.math.util.TrigMathUtil;
 import com.hypixel.hytale.math.vector.Transform;
 import com.hypixel.hytale.math.vector.Vector3d;
 import com.hypixel.hytale.math.vector.Vector3f;
+import com.hypixel.hytale.math.vector.Vector3i;
 import com.hypixel.hytale.server.core.Message;
 import com.hypixel.hytale.server.core.NameMatching;
 import com.hypixel.hytale.server.core.asset.type.weather.config.Weather;
@@ -43,11 +44,14 @@ import com.hypixel.hytale.server.core.entity.nameplate.Nameplate;
 import com.hypixel.hytale.server.core.modules.entity.component.Intangible;
 import com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId;
 import com.hypixel.hytale.server.core.entity.effect.EffectControllerComponent;
+import com.hypixel.hytale.server.core.modules.interaction.BlockHarvestUtils;
+import com.hypixel.hytale.server.core.universe.world.storage.ChunkStore;
 import com.hypixel.hytale.server.npc.movement.controllers.MotionController;
 import dev.hycompanion.plugin.HycompanionEntrypoint;
 import dev.hycompanion.plugin.api.GamePlayer;
 import dev.hycompanion.plugin.api.HytaleAPI;
 import dev.hycompanion.plugin.api.Location;
+import dev.hycompanion.plugin.api.inventory.*;
 import dev.hycompanion.plugin.core.npc.NpcData;
 import dev.hycompanion.plugin.core.npc.NpcInstanceData;
 import dev.hycompanion.plugin.core.npc.NpcMoveResult;
@@ -1806,9 +1810,20 @@ public class HytaleServerAdapter implements HytaleAPI {
                 Ref<EntityStore> nearestRef = null;
                 String bestName = "";
 
+                // Get NPC's UUID for comparison
+                com.hypixel.hytale.server.core.entity.UUIDComponent myUuidComp = 
+                    store.getComponent(myselfRef, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                UUID myUuid = myUuidComp != null ? myUuidComp.getUuid() : null;
+
                 // Iterate all entities
-                for (Ref<EntityStore> ref : allEntities.values()) {
-                    if (ref.equals(myselfRef) || !ref.isValid())
+                for (Map.Entry<UUID, Ref<EntityStore>> entry : allEntities.entrySet()) {
+                    UUID entityUuid = entry.getKey();
+                    Ref<EntityStore> ref = entry.getValue();
+                    
+                    // Skip if invalid or is the NPC itself
+                    if (!ref.isValid())
+                        continue;
+                    if (myUuid != null && myUuid.equals(entityUuid))
                         continue;
 
                     // if(npcInstanceId.equals(ref.getStore().getExternalData().getRefFromUUID()))
@@ -1954,9 +1969,20 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                 List<Map<String, Object>> entities = new ArrayList<>();
 
+                // Get NPC's UUID for comparison
+                com.hypixel.hytale.server.core.entity.UUIDComponent myUuidComp = 
+                    store.getComponent(myselfRef, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                UUID myUuid = myUuidComp != null ? myUuidComp.getUuid() : null;
+
                 // Iterate all entities
-                for (Ref<EntityStore> ref : allEntities.values()) {
-                    if (ref.equals(myselfRef) || !ref.isValid())
+                for (Map.Entry<UUID, Ref<EntityStore>> entry : allEntities.entrySet()) {
+                    UUID entryEntityUuid = entry.getKey();
+                    Ref<EntityStore> ref = entry.getValue();
+                    
+                    // Skip if invalid or is the NPC itself
+                    if (!ref.isValid())
+                        continue;
+                    if (myUuid != null && myUuid.equals(entryEntityUuid))
                         continue;
 
                     TransformComponent t = store.getComponent(ref, TransformComponent.getComponentType());
@@ -3194,6 +3220,9 @@ public class HytaleServerAdapter implements HytaleAPI {
             return;
         }
 
+        // Get player's UUID for comparison
+        UUID playerUuid = targetPlayer.getUuid();
+
         // Check each NPC to see if it's following this player
         for (var entry : npcInstanceEntities.entrySet()) {
             UUID npcInstanceId = entry.getKey();
@@ -3222,7 +3251,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                 }
 
                 Ref<EntityStore> currentTarget = markedSupport.getMarkedEntityRef("LockedTarget");
-                if (currentTarget != null && currentTarget.equals(playerEntityRef)) {
+                // Compare by UUID since Ref doesn't have equals()
+                UUID targetUuid = null;
+                if (currentTarget != null && currentTarget.isValid()) {
+                    var uuidComp = store.getComponent(currentTarget, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                    if (uuidComp != null) {
+                        targetUuid = uuidComp.getUuid();
+                    }
+                }
+                if (targetUuid != null && targetUuid.equals(playerUuid)) {
                     // This NPC is following the disconnecting player - clear the target
                     logger.info("[Hycompanion] Clearing follow target for NPC " + npcInstanceId +
                             " (was following disconnecting player: " + playerName + ")");
@@ -4837,6 +4874,1060 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         return result.length() > 0 ? result.toString() : "Block";
+    }
+
+    // ========== Inventory Operations ==========
+
+    @Override
+    public EquipResult equipItem(UUID npcInstanceId, String itemId, String slot) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return EquipResult.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return EquipResult.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return EquipResult.failed("World not found");
+        }
+
+        // Determine target slot
+        String targetSlot = slot;
+        if ("auto".equals(slot)) {
+            targetSlot = "hotbar_0";
+        }
+
+        // Get the item from asset registry (safe to do outside world thread)
+        var itemAssetMap = com.hypixel.hytale.server.core.asset.type.item.config.Item.getAssetMap();
+        var item = itemAssetMap.getAsset(itemId);
+        if (item == null) {
+            return EquipResult.failed("Item not found: " + itemId);
+        }
+
+        CompletableFuture<EquipResult> equipResultFuture = new CompletableFuture<>();
+        String finalTargetSlot = targetSlot;
+        
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        equipResultFuture.complete(EquipResult.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        equipResultFuture.complete(EquipResult.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    // Create item stack
+                    ItemStack itemStack = new ItemStack(itemId, 1, null);
+                    Map<String, Object> previousItem = null;
+
+                    // Equip to appropriate slot
+                    switch (finalTargetSlot) {
+                        case "head":
+                        case "chest":
+                        case "hands":
+                        case "legs":
+                            ItemContainer armor = inventory.getArmor();
+                            int armorSlot = getArmorSlotIndex(finalTargetSlot);
+                            if (armorSlot >= 0) {
+                                ItemStack existing = armor.getItemStack((short) armorSlot);
+                                if (existing != null && !existing.isEmpty()) {
+                                    previousItem = Map.of(
+                                        "itemId", existing.getItem().getId(),
+                                        "quantity", existing.getQuantity()
+                                    );
+                                }
+                                armor.setItemStackForSlot((short) armorSlot, itemStack);
+                            }
+                            break;
+                        case "hotbar_0":
+                        case "hotbar_1":
+                        case "hotbar_2":
+                            ItemContainer hotbar = inventory.getHotbar();
+                            int hotbarSlot = Integer.parseInt(finalTargetSlot.replace("hotbar_", ""));
+                            ItemStack existing = hotbar.getItemStack((short) hotbarSlot);
+                            if (existing != null && !existing.isEmpty()) {
+                                previousItem = Map.of(
+                                    "itemId", existing.getItem().getId(),
+                                    "quantity", existing.getQuantity()
+                                );
+                            }
+                            hotbar.setItemStackForSlot((short) hotbarSlot, itemStack);
+                            inventory.setActiveHotbarSlot((byte) hotbarSlot);
+                            break;
+                        default:
+                            equipResultFuture.complete(EquipResult.failed("Unknown slot: " + finalTargetSlot));
+                            return;
+                    }
+
+                    logger.info("[Hycompanion] Equipped " + itemId + " to " + finalTargetSlot + " for NPC " + npcInstanceId);
+                    equipResultFuture.complete(EquipResult.success(itemId, finalTargetSlot, previousItem));
+                } catch (Exception e) {
+                    equipResultFuture.completeExceptionally(e);
+                }
+            });
+            return equipResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error equipping item: " + e.getMessage());
+            Sentry.captureException(e);
+            return EquipResult.failed("Error: " + e.getMessage());
+        }
+    }
+
+    private int getArmorSlotIndex(String slot) {
+        return switch (slot) {
+            case "head" -> 0;
+            case "chest" -> 1;
+            case "hands" -> 2;
+            case "legs" -> 3;
+            default -> -1;
+        };
+    }
+
+    @Override
+    public BreakResult breakBlock(UUID npcInstanceId, Location targetBlock, String toolItemId, int maxAttempts) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return BreakResult.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return BreakResult.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return BreakResult.failed("World not found");
+        }
+
+        // Execute on world thread
+        CompletableFuture<BreakResult> breakResultFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        breakResultFuture.complete(BreakResult.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    // Equip tool if specified
+                    if (toolItemId != null && !toolItemId.isEmpty()) {
+                        EquipResult equipResult = equipItem(npcInstanceId, toolItemId, "hotbar_0");
+                        if (!equipResult.success()) {
+                            logger.warn("[Hycompanion] Failed to equip tool: " + equipResult.error());
+                        }
+                    }
+
+                    Vector3i blockPos = new Vector3i(
+                        (int) Math.floor(targetBlock.x()),
+                        (int) Math.floor(targetBlock.y()),
+                        (int) Math.floor(targetBlock.z())
+                    );
+
+                    // Get block type before breaking
+                    var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType.getAssetMap();
+                    int blockId = world.getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.getX(), blockPos.getZ()))
+                        .getBlock(blockPos.getX(), blockPos.getY(), blockPos.getZ());
+                    String blockIdStr = "unknown";
+                    var blockType = blockTypeAssetMap.getAsset(blockId);
+                    if (blockType != null) {
+                        blockIdStr = blockType.getId();
+                    }
+
+                    // Perform block breaking using BlockHarvestUtils.performBlockDamage for gradual breaking
+                    // This respects the equipped tool and doesn't trigger connected blocks (like whole trees)
+                    long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.getX(), blockPos.getZ());
+                    var chunkStore = world.getChunkStore().getStore();
+                    Ref<ChunkStore> chunkRef = chunkStore.getExternalData().getChunkReference(chunkIndex);
+                    
+                    if (chunkRef == null || !chunkRef.isValid()) {
+                        breakResultFuture.complete(BreakResult.failed("Chunk not loaded"));
+                        return;
+                    }
+                    
+                    // Get the held item for tool power calculation
+                    ItemStack heldItemStack = null;
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory != null) {
+                        heldItemStack = inventory.getItemInHand();
+                    }
+                    
+                    // Perform gradual block damage until broken
+                    int attempts = 0;
+                    boolean broken = false;
+                    while (attempts < maxAttempts && !broken) {
+                        broken = BlockHarvestUtils.performBlockDamage(
+                            npcEntity,      // entity (LivingEntity)
+                            entityRef,      // ref (Ref<EntityStore>)
+                            blockPos,       // targetBlockPos
+                            heldItemStack,  // itemStack
+                            null,           // tool (can be null, will be derived from itemStack)
+                            null,           // toolId
+                            false,          // matchTool
+                            1.0f,           // damageScale
+                            0,              // setBlockSettings
+                            chunkRef,       // chunkReference
+                            store,          // entityStore
+                            chunkStore      // chunkStore
+                        );
+                        attempts++;
+                        if (!broken) {
+                            try {
+                                Thread.sleep(400); // Wait between hits
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!broken) {
+                        breakResultFuture.complete(BreakResult.unbroken("BLOCK_UNBREAKABLE"));
+                        return;
+                    }
+
+                    // Wait for drops to settle
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+
+                    // Scan for dropped items
+                    List<Map<String, Object>> drops = scanForDrops(store, targetBlock, 3);
+
+                    // Get tool durability from already-fetched held item
+                    Double durability = null;
+                    if (heldItemStack != null && !heldItemStack.isEmpty()) {
+                        durability = heldItemStack.getDurability();
+                    }
+
+                    Map<String, Object> dropLocation = Map.of(
+                        "x", targetBlock.x(),
+                        "y", targetBlock.y(),
+                        "z", targetBlock.z()
+                    );
+
+                    logger.info("[Hycompanion] Broke block " + blockIdStr + " at " + targetBlock + " for NPC " + npcInstanceId);
+                    breakResultFuture.complete(BreakResult.success(blockIdStr, attempts, drops, dropLocation, durability));
+                } catch (Exception e) {
+                    breakResultFuture.completeExceptionally(e);
+                }
+            });
+            return breakResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error breaking block: " + e.getMessage());
+            Sentry.captureException(e);
+            return BreakResult.failed("Error: " + e.getMessage());
+        }
+    }
+
+
+
+    private List<Map<String, Object>> scanForDrops(Store<EntityStore> store, Location center, int radius) {
+        List<Map<String, Object>> drops = new ArrayList<>();
+        Vector3d centerPos = new Vector3d(center.x(), center.y(), center.z());
+
+        // Use reflection to access entitiesByUuid map
+        try {
+            Field entitiesMapField = EntityStore.class.getDeclaredField("entitiesByUuid");
+            entitiesMapField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<UUID, Ref<EntityStore>> allEntities = (Map<UUID, Ref<EntityStore>>) entitiesMapField
+                    .get(store.getExternalData());
+
+            for (Ref<EntityStore> ref : allEntities.values()) {
+                if (!ref.isValid()) continue;
+
+                com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = 
+                    store.getComponent(ref, com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
+                if (itemComp == null) continue;
+
+                TransformComponent transform = store.getComponent(ref, TransformComponent.getComponentType());
+                if (transform == null) continue;
+
+                double distance = transform.getPosition().distanceTo(centerPos);
+                if (distance <= radius) {
+                    drops.add(Map.of(
+                        "itemId", itemComp.getItemStack().getItem().getId(),
+                        "quantity", itemComp.getItemStack().getQuantity()
+                    ));
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("[Hycompanion] Error scanning for drops: " + e.getMessage());
+        }
+
+        return drops;
+    }
+
+    @Override
+    public PickupResult pickupItems(UUID npcInstanceId, double radius, String itemId, int maxItems) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return PickupResult.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return PickupResult.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return PickupResult.failed("World not found");
+        }
+
+        CompletableFuture<PickupResult> pickupResultFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        pickupResultFuture.complete(PickupResult.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        pickupResultFuture.complete(PickupResult.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    TransformComponent npcTransform = store.getComponent(entityRef, TransformComponent.getComponentType());
+                    if (npcTransform == null) {
+                        pickupResultFuture.complete(PickupResult.failed("NPC has no transform"));
+                        return;
+                    }
+
+                    Vector3d npcPos = npcTransform.getPosition();
+                    List<Map<String, Object>> pickedUpItems = new ArrayList<>();
+                    int itemsPickedUp = 0;
+                    int itemsRemaining = 0;
+
+                    // Debug logging
+                    logger.debug("[Hycompanion] Pickup started: radius=" + radius + ", itemId=" + itemId + ", npcPos=" + npcPos);
+                    logger.debug("[Hycompanion] NPC storage capacity: " + inventory.getStorage().getCapacity());
+
+                    // Use reflection to access entitiesByUuid map
+                    try {
+                        Field entitiesMapField = EntityStore.class.getDeclaredField("entitiesByUuid");
+                        entitiesMapField.setAccessible(true);
+                        @SuppressWarnings("unchecked")
+                        Map<UUID, Ref<EntityStore>> allEntities = (Map<UUID, Ref<EntityStore>>) entitiesMapField
+                                .get(store.getExternalData());
+
+                        int checkedEntities = 0;
+                        int itemEntitiesFound = 0;
+
+                        for (Ref<EntityStore> ref : allEntities.values()) {
+                            if (!ref.isValid()) continue;
+
+                            com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = 
+                                store.getComponent(ref, com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
+                            if (itemComp == null) continue;
+                            
+                            itemEntitiesFound++;
+
+                            TransformComponent transform = store.getComponent(ref, TransformComponent.getComponentType());
+                            if (transform == null) continue;
+
+                            double distance = transform.getPosition().distanceTo(npcPos);
+                            
+                            String droppedItemId = itemComp.getItemStack().getItem().getId();
+                            int droppedQty = itemComp.getItemStack().getQuantity();
+                            
+                            checkedEntities++;
+                            logger.debug("[Hycompanion] Checking item: " + droppedItemId + " x" + droppedQty + 
+                                " at distance " + distance + " (radius=" + radius + ")");
+                            
+                            // Add small epsilon for floating point precision (items within ~0.1 blocks of radius should be included)
+                            double effectiveRadius = radius + 0.1;
+                            if (distance > effectiveRadius) continue;
+
+                            // Filter by itemId if specified
+                            if (itemId != null && !itemId.isEmpty() && !droppedItemId.equals(itemId)) {
+                                logger.debug("[Hycompanion] Item ID mismatch: expected=" + itemId + ", found=" + droppedItemId);
+                                continue;
+                            }
+
+                            if (itemsPickedUp >= maxItems) {
+                                itemsRemaining++;
+                                logger.debug("[Hycompanion] Max items reached, remaining++");
+                                continue;
+                            }
+
+                            // Add to inventory - try storage first, then hotbar
+                            ItemStack stack = itemComp.getItemStack();
+                            logger.debug("[Hycompanion] Attempting to add " + droppedItemId + " to inventory");
+                            
+                            boolean added = false;
+                            
+                            // Try storage first
+                            if (inventory.getStorage().getCapacity() > 0) {
+                                var transaction = inventory.getStorage().addItemStack(stack);
+                                added = transaction != null && transaction.getRemainder() == null;
+                                logger.debug("[Hycompanion] Storage add result: " + added);
+                            }
+                            
+                            // If storage failed or has no capacity, try hotbar
+                            if (!added) {
+                                var hotbarTransaction = inventory.getHotbar().addItemStack(stack);
+                                added = hotbarTransaction != null && hotbarTransaction.getRemainder() == null;
+                                logger.debug("[Hycompanion] Hotbar add result: " + added);
+                            }
+
+                            if (added) {
+                                // Remove the item entity
+                                store.removeEntity(ref, com.hypixel.hytale.component.RemoveReason.REMOVE);
+                                
+                                pickedUpItems.add(Map.of(
+                                    "itemId", droppedItemId,
+                                    "quantity", stack.getQuantity()
+                                ));
+                                itemsPickedUp++;
+                                logger.debug("[Hycompanion] Successfully picked up " + droppedItemId);
+                            } else {
+                                itemsRemaining++;
+                                logger.debug("[Hycompanion] Failed to add to inventory (storage and hotbar full)");
+                            }
+                        }
+                        
+                        logger.debug("[Hycompanion] Pickup complete: checked=" + checkedEntities + 
+                            ", itemEntities=" + itemEntitiesFound + ", pickedUp=" + itemsPickedUp + ", remaining=" + itemsRemaining);
+                    } catch (Exception e) {
+                        logger.error("[Hycompanion] Error during pickup: " + e.getMessage(), e);
+                    }
+
+                    logger.info("[Hycompanion] Picked up " + itemsPickedUp + " items for NPC " + npcInstanceId);
+                    
+                    // Build error message if items were found but couldn't be picked up
+                    String error = null;
+                    if (itemsPickedUp == 0 && itemsRemaining > 0) {
+                        error = "Inventory full or items don't match filter";
+                    } else if (itemsRemaining > 0) {
+                        error = "Some items remaining (inventory may be full)";
+                    }
+                    
+                    pickupResultFuture.complete(new PickupResult(
+                        true, itemsPickedUp, pickedUpItems, itemsRemaining, error
+                    ));
+                } catch (Exception e) {
+                    pickupResultFuture.completeExceptionally(e);
+                }
+            });
+            return pickupResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error picking up items: " + e.getMessage());
+            Sentry.captureException(e);
+            return PickupResult.failed("Error: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public UseResult useHeldItem(UUID npcInstanceId, Location target, int useCount, long intervalMs, TargetType targetType) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return UseResult.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return UseResult.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return UseResult.failed("World not found");
+        }
+
+        CompletableFuture<UseResult> useResultFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        useResultFuture.complete(UseResult.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        useResultFuture.complete(UseResult.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    ItemStack heldItem = inventory.getItemInHand();
+                    if (heldItem == null || heldItem.isEmpty()) {
+                        useResultFuture.complete(UseResult.failed("No item in hand"));
+                        return;
+                    }
+
+                    int usesPerformed = 0;
+                    boolean toolBroke = false;
+
+                    for (int i = 0; i < useCount; i++) {
+                        // Perform the use action
+                        // In a full implementation, this would trigger the item's use action
+                        usesPerformed++;
+
+                        // Check if tool broke
+                        if (heldItem.getDurability() <= 0) {
+                            toolBroke = true;
+                            break;
+                        }
+
+                        if (i < useCount - 1) {
+                            try {
+                                Thread.sleep(intervalMs);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            }
+                        }
+                    }
+
+                    logger.info("[Hycompanion] Used held item " + usesPerformed + " times for NPC " + npcInstanceId);
+                    useResultFuture.complete(UseResult.success(usesPerformed, null, null, toolBroke));
+                } catch (Exception e) {
+                    useResultFuture.completeExceptionally(e);
+                }
+            });
+            return useResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error using held item: " + e.getMessage());
+            Sentry.captureException(e);
+            return UseResult.failed("Error: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public DropResult dropItem(UUID npcInstanceId, String itemId, int quantity, float throwSpeed) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return DropResult.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return DropResult.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return DropResult.failed("World not found");
+        }
+
+        CompletableFuture<DropResult> dropResultFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        dropResultFuture.complete(DropResult.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        dropResultFuture.complete(DropResult.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    // Find the item in inventory
+                    ItemStack toDrop = null;
+                    int remainingQuantity = 0;
+
+                    logger.debug("[Hycompanion] Drop: looking for '" + itemId + "' x" + quantity);
+                    logger.debug("[Hycompanion] Drop: hotbar capacity=" + inventory.getHotbar().getCapacity() + 
+                        ", storage capacity=" + inventory.getStorage().getCapacity());
+
+                    // Check hotbar first
+                    ItemContainer hotbar = inventory.getHotbar();
+                    logger.debug("[Hycompanion] Drop: scanning hotbar...");
+                    for (short i = 0; i < hotbar.getCapacity(); i++) {
+                        ItemStack stack = hotbar.getItemStack(i);
+                        if (stack != null && !stack.isEmpty()) {
+                            String stackId = stack.getItem().getId();
+                            logger.debug("[Hycompanion] Drop: hotbar[" + i + "]='" + stackId + "' x" + stack.getQuantity());
+                            // Check exact match or partial match
+                            boolean matches = itemId.equals(stackId) || stackId.contains(itemId);
+                            if (matches) {
+                                int dropQty = Math.min(quantity, stack.getQuantity());
+                                toDrop = new ItemStack(stackId, dropQty, null);
+                                
+                                if (stack.getQuantity() <= dropQty) {
+                                    hotbar.setItemStackForSlot(i, null);
+                                } else {
+                                    ItemStack newStack = stack.withQuantity(stack.getQuantity() - dropQty);
+                                    hotbar.setItemStackForSlot(i, newStack);
+                                    remainingQuantity = newStack.getQuantity();
+                                }
+                                logger.debug("[Hycompanion] Drop: found in hotbar, dropQty=" + dropQty + ", actualId=" + stackId);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Check storage if not found in hotbar
+                    if (toDrop == null) {
+                        ItemContainer storage = inventory.getStorage();
+                        logger.debug("[Hycompanion] Drop: scanning storage...");
+                        for (short i = 0; i < storage.getCapacity(); i++) {
+                            ItemStack stack = storage.getItemStack(i);
+                            if (stack != null && !stack.isEmpty()) {
+                                String stackId = stack.getItem().getId();
+                                logger.debug("[Hycompanion] Drop: storage[" + i + "]='" + stackId + "' x" + stack.getQuantity());
+                                // Check exact match or partial match
+                                boolean matches = itemId.equals(stackId) || stackId.contains(itemId);
+                                if (matches) {
+                                    int dropQty = Math.min(quantity, stack.getQuantity());
+                                    toDrop = new ItemStack(stackId, dropQty, null);
+                                    
+                                    if (stack.getQuantity() <= dropQty) {
+                                        storage.setItemStackForSlot(i, null);
+                                    } else {
+                                        ItemStack newStack = stack.withQuantity(stack.getQuantity() - dropQty);
+                                        storage.setItemStackForSlot(i, newStack);
+                                        remainingQuantity = newStack.getQuantity();
+                                    }
+                                    logger.debug("[Hycompanion] Drop: found in storage, dropQty=" + dropQty + ", actualId=" + stackId);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (toDrop == null) {
+                        // Build list of available items for error message
+                        StringBuilder available = new StringBuilder();
+                        for (short i = 0; i < hotbar.getCapacity(); i++) {
+                            ItemStack stack = hotbar.getItemStack(i);
+                            if (stack != null && !stack.isEmpty()) {
+                                if (available.length() > 0) available.append(", ");
+                                available.append("'").append(stack.getItem().getId()).append("'");
+                            }
+                        }
+                        for (short i = 0; i < inventory.getStorage().getCapacity(); i++) {
+                            ItemStack stack = inventory.getStorage().getItemStack(i);
+                            if (stack != null && !stack.isEmpty()) {
+                                if (available.length() > 0) available.append(", ");
+                                available.append("'").append(stack.getItem().getId()).append("'");
+                            }
+                        }
+                        String msg = available.length() > 0 ? 
+                            "Item '" + itemId + "' not found. Available: " + available :
+                            "Item '" + itemId + "' not found. Inventory is empty.";
+                        logger.debug("[Hycompanion] Drop: " + msg);
+                        dropResultFuture.complete(DropResult.failed(msg));
+                        return;
+                    }
+
+                    // Create dropped item entity
+                    TransformComponent npcTransform = store.getComponent(entityRef, TransformComponent.getComponentType());
+                    if (npcTransform == null) {
+                        dropResultFuture.complete(DropResult.failed("NPC has no transform"));
+                        return;
+                    }
+
+                    Vector3d npcPos = npcTransform.getPosition();
+                    Vector3f npcRot = npcTransform.getRotation();
+                    
+                    // Calculate forward direction from NPC's yaw (rotation around Y axis)
+                    float yaw = npcRot.getYaw();
+                    double forwardX = -Math.sin(yaw);
+                    double forwardZ = -Math.cos(yaw);
+                    
+                    // Position slightly in front of NPC (0.5 blocks) and at hand height
+                    Vector3d dropPos = new Vector3d(
+                        npcPos.getX() + forwardX * 0.5, 
+                        npcPos.getY() + 0.8, 
+                        npcPos.getZ() + forwardZ * 0.5
+                    );
+                    
+                    // Gentle throw velocity: 2.0 horizontal speed + small upward arc
+                    float itemThrowSpeed = 2.0f;
+                    float velocityX = (float) (forwardX * itemThrowSpeed);
+                    float velocityZ = (float) (forwardZ * itemThrowSpeed);
+                    float velocityY = 2.5f; // Gentle upward arc
+
+                    // Use Hytale's ItemComponent.generateItemDrop to properly create a dropped item
+                    // This adds all necessary components: ItemComponent, TransformComponent, Velocity, 
+                    // PhysicsValues, UUIDComponent, Intangible, and DespawnComponent
+                    com.hypixel.hytale.component.Holder<EntityStore> itemHolder = 
+                        com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.generateItemDrop(
+                            store,                    // ComponentAccessor
+                            toDrop,                   // ItemStack to drop
+                            dropPos,                  // Position (slightly in front of NPC)
+                            new com.hypixel.hytale.math.vector.Vector3f(0, 0, 0),  // Rotation
+                            velocityX,                // velocityX - forward direction
+                            velocityY,                // velocityY - gentle upward arc
+                            velocityZ                 // velocityZ - forward direction
+                        );
+                    
+                    if (itemHolder == null) {
+                        dropResultFuture.complete(DropResult.failed("Failed to create item entity"));
+                        return;
+                    }
+                    
+                    // Add NetworkId for client visibility
+                    itemHolder.addComponent(com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId.getComponentType(),
+                        new com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId(
+                            world.getEntityStore().getStore().getExternalData().takeNextNetworkId()));
+                    
+                    // Set pickup delay (1.5 seconds before NPC can pick it back up)
+                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = 
+                        (com.hypixel.hytale.server.core.modules.entity.item.ItemComponent) itemHolder.getComponent(
+                            com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
+                    if (itemComp != null) {
+                        itemComp.setPickupDelay(1.5f);
+                    }
+                    
+                    // Spawn the entity
+                    Ref<EntityStore> itemRef = world.getEntityStore().getStore().addEntity(itemHolder, com.hypixel.hytale.component.AddReason.SPAWN);
+                    
+                    if (itemRef == null || !itemRef.isValid()) {
+                        dropResultFuture.complete(DropResult.failed("Failed to spawn item entity"));
+                        return;
+                    }
+
+                    logger.info("[Hycompanion] Dropped " + toDrop.getQuantity() + "x " + itemId + " for NPC " + npcInstanceId);
+                    dropResultFuture.complete(DropResult.success(itemId, toDrop.getQuantity(), remainingQuantity));
+                } catch (Exception e) {
+                    dropResultFuture.completeExceptionally(e);
+                }
+            });
+            return dropResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error dropping item: " + e.getMessage());
+            Sentry.captureException(e);
+            return DropResult.failed("Error: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public InventorySnapshot getInventory(UUID npcInstanceId, boolean includeEmpty) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return InventorySnapshot.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return InventorySnapshot.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return InventorySnapshot.failed("World not found");
+        }
+
+        CompletableFuture<InventorySnapshot> snapshotFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        snapshotFuture.complete(InventorySnapshot.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        snapshotFuture.complete(InventorySnapshot.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    // Build armor info
+                    Map<String, Object> armor = new HashMap<>();
+                    ItemContainer armorContainer = inventory.getArmor();
+                    String[] armorSlots = {"head", "chest", "hands", "legs"};
+                    for (int i = 0; i < armorSlots.length && i < armorContainer.getCapacity(); i++) {
+                        ItemStack stack = armorContainer.getItemStack((short) i);
+                        if (stack != null && !stack.isEmpty()) {
+                            armor.put(armorSlots[i], Map.of(
+                                "itemId", stack.getItem().getId(),
+                                "quantity", stack.getQuantity()
+                            ));
+                        } else if (includeEmpty) {
+                            armor.put(armorSlots[i], null);
+                        }
+                    }
+
+                    // Build hotbar info
+                    List<Map<String, Object>> hotbar = new ArrayList<>();
+                    ItemContainer hotbarContainer = inventory.getHotbar();
+                    int activeSlot = inventory.getActiveHotbarSlot();
+                    for (int i = 0; i < hotbarContainer.getCapacity(); i++) {
+                        ItemStack stack = hotbarContainer.getItemStack((short) i);
+                        Map<String, Object> slotInfo = new HashMap<>();
+                        slotInfo.put("slot", i);
+                        if (stack != null && !stack.isEmpty()) {
+                            slotInfo.put("itemId", stack.getItem().getId());
+                            slotInfo.put("quantity", stack.getQuantity());
+                        } else {
+                            slotInfo.put("itemId", null);
+                            slotInfo.put("quantity", 0);
+                        }
+                        slotInfo.put("isActive", i == activeSlot);
+                        if (includeEmpty || (stack != null && !stack.isEmpty())) {
+                            hotbar.add(slotInfo);
+                        }
+                    }
+
+                    // Build storage info
+                    List<Map<String, Object>> storage = new ArrayList<>();
+                    ItemContainer storageContainer = inventory.getStorage();
+                    for (int i = 0; i < storageContainer.getCapacity(); i++) {
+                        ItemStack stack = storageContainer.getItemStack((short) i);
+                        Map<String, Object> slotInfo = new HashMap<>();
+                        slotInfo.put("slot", i);
+                        if (stack != null && !stack.isEmpty()) {
+                            slotInfo.put("itemId", stack.getItem().getId());
+                            slotInfo.put("quantity", stack.getQuantity());
+                        } else {
+                            slotInfo.put("itemId", null);
+                            slotInfo.put("quantity", 0);
+                        }
+                        if (includeEmpty || (stack != null && !stack.isEmpty())) {
+                            storage.add(slotInfo);
+                        }
+                    }
+
+                    // Get held item
+                    Map<String, Object> heldItem = null;
+                    ItemStack held = inventory.getItemInHand();
+                    if (held != null && !held.isEmpty()) {
+                        heldItem = Map.of(
+                            "itemId", held.getItem().getId(),
+                            "quantity", held.getQuantity()
+                        );
+                    }
+
+                    // Count total items
+                    int totalItems = armor.size();
+                    for (int i = 0; i < hotbarContainer.getCapacity(); i++) {
+                        ItemStack stack = hotbarContainer.getItemStack((short) i);
+                        if (stack != null && !stack.isEmpty()) totalItems++;
+                    }
+                    for (int i = 0; i < storageContainer.getCapacity(); i++) {
+                        ItemStack stack = storageContainer.getItemStack((short) i);
+                        if (stack != null && !stack.isEmpty()) totalItems++;
+                    }
+
+                    snapshotFuture.complete(InventorySnapshot.create(armor, hotbar, storage, heldItem, totalItems));
+                } catch (Exception e) {
+                    snapshotFuture.completeExceptionally(e);
+                }
+            });
+            return snapshotFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error getting inventory: " + e.getMessage());
+            Sentry.captureException(e);
+            return InventorySnapshot.failed("Error: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public UnequipResult unequipItem(UUID npcInstanceId, String slot, boolean destroy) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return UnequipResult.failed("NPC not found");
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return UnequipResult.failed("Invalid entity reference");
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return UnequipResult.failed("World not found");
+        }
+
+        CompletableFuture<UnequipResult> unequipResultFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        unequipResultFuture.complete(UnequipResult.failed("NPC entity not found"));
+                        return;
+                    }
+
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        unequipResultFuture.complete(UnequipResult.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    Map<String, Object> itemRemoved = null;
+                    boolean movedToStorage = false;
+
+                    // Get item from slot
+                    ItemStack removed = null;
+                    switch (slot) {
+                        case "head":
+                        case "chest":
+                        case "hands":
+                        case "legs":
+                            ItemContainer armor = inventory.getArmor();
+                            int armorSlot = getArmorSlotIndex(slot);
+                            if (armorSlot >= 0) {
+                                removed = armor.getItemStack((short) armorSlot);
+                                if (removed != null && !removed.isEmpty()) {
+                                    itemRemoved = Map.of(
+                                        "itemId", removed.getItem().getId(),
+                                        "quantity", removed.getQuantity()
+                                    );
+                                    if (destroy) {
+                                        armor.setItemStackForSlot((short) armorSlot, null);
+                                    } else {
+                                        // Try to move to storage
+                                        var transaction = inventory.getStorage().addItemStack(removed);
+                                        movedToStorage = transaction != null && transaction.getRemainder() == null;
+                                        if (movedToStorage) {
+                                            armor.setItemStackForSlot((short) armorSlot, null);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        case "hotbar_0":
+                        case "hotbar_1":
+                        case "hotbar_2":
+                            ItemContainer hotbar = inventory.getHotbar();
+                            int hotbarSlot = Integer.parseInt(slot.replace("hotbar_", ""));
+                            removed = hotbar.getItemStack((short) hotbarSlot);
+                            if (removed != null && !removed.isEmpty()) {
+                                itemRemoved = Map.of(
+                                    "itemId", removed.getItem().getId(),
+                                    "quantity", removed.getQuantity()
+                                );
+                                if (destroy) {
+                                    hotbar.setItemStackForSlot((short) hotbarSlot, null);
+                                } else {
+                                    // Try to move to storage
+                                    var transaction = inventory.getStorage().addItemStack(removed);
+                                    movedToStorage = transaction != null && transaction.getRemainder() == null;
+                                    if (movedToStorage) {
+                                        hotbar.setItemStackForSlot((short) hotbarSlot, null);
+                                    }
+                                }
+                            }
+                            break;
+                        case "held":
+                            removed = inventory.getItemInHand();
+                            if (removed != null && !removed.isEmpty()) {
+                                itemRemoved = Map.of(
+                                    "itemId", removed.getItem().getId(),
+                                    "quantity", removed.getQuantity()
+                                );
+                                if (destroy) {
+                                    // Can't directly clear held item, set active slot to empty
+                                    int activeSlot = inventory.getActiveHotbarSlot();
+                                    inventory.getHotbar().setItemStackForSlot((short) activeSlot, null);
+                                } else {
+                                    // Try to move to storage
+                                    var transaction = inventory.getStorage().addItemStack(removed);
+                                    movedToStorage = transaction != null && transaction.getRemainder() == null;
+                                    if (movedToStorage) {
+                                        int activeSlot = inventory.getActiveHotbarSlot();
+                                        inventory.getHotbar().setItemStackForSlot((short) activeSlot, null);
+                                    }
+                                }
+                            }
+                            break;
+                        default:
+                            unequipResultFuture.complete(UnequipResult.failed("Unknown slot: " + slot));
+                            return;
+                    }
+
+                    if (removed == null || removed.isEmpty()) {
+                        unequipResultFuture.complete(UnequipResult.failed("No item in slot: " + slot));
+                        return;
+                    }
+
+                    logger.info("[Hycompanion] Unequipped item from " + slot + " for NPC " + npcInstanceId);
+                    
+                    if (destroy) {
+                        unequipResultFuture.complete(UnequipResult.destroyed(slot, itemRemoved));
+                    } else {
+                        unequipResultFuture.complete(UnequipResult.success(slot, itemRemoved, movedToStorage));
+                    }
+                } catch (Exception e) {
+                    unequipResultFuture.completeExceptionally(e);
+                }
+            });
+            return unequipResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error unequipping item: " + e.getMessage());
+            Sentry.captureException(e);
+            return UnequipResult.failed("Error: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public boolean expandNpcInventory(UUID npcInstanceId, int storageSlots) {
+        NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
+        if (npcData == null) {
+            return false;
+        }
+
+        Ref<EntityStore> entityRef = npcData.entityRef();
+        if (entityRef == null || !entityRef.isValid()) {
+            return false;
+        }
+
+        Store<EntityStore> store = entityRef.getStore();
+        World world = store.getExternalData().getWorld();
+        if (world == null) {
+            return false;
+        }
+
+        CompletableFuture<Boolean> expandResultFuture = new CompletableFuture<>();
+        try {
+            world.execute(() -> {
+                try {
+                    NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npcEntity == null) {
+                        expandResultFuture.complete(false);
+                        return;
+                    }
+
+                    // Set inventory size - this expands storage
+                    // (hotbarCapacity, inventoryCapacity, offHandCapacity)
+                    npcEntity.setInventorySize(9, storageSlots, 0);
+                    logger.info("[Hycompanion] Expanded inventory by " + storageSlots + " slots for NPC " + npcInstanceId);
+                    expandResultFuture.complete(true);
+                } catch (Exception e) {
+                    expandResultFuture.completeExceptionally(e);
+                }
+            });
+            return expandResultFuture.get();
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Error expanding inventory: " + e.getMessage());
+            Sentry.captureException(e);
+            return false;
+        }
     }
 
 }

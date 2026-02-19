@@ -3,6 +3,7 @@ package dev.hycompanion.plugin.adapter;
 import dev.hycompanion.plugin.api.GamePlayer;
 import dev.hycompanion.plugin.api.HytaleAPI;
 import dev.hycompanion.plugin.api.Location;
+import dev.hycompanion.plugin.api.inventory.*;
 import dev.hycompanion.plugin.core.npc.NpcData;
 import dev.hycompanion.plugin.core.npc.NpcInstanceData;
 import dev.hycompanion.plugin.utils.PluginLogger;
@@ -435,5 +436,77 @@ public class MockHytaleAdapter implements HytaleAPI {
         throw new UnsupportedOperationException("Unimplemented method 'findEntity'");
     }
 
+    // ========== Inventory Operations ==========
 
+    @Override
+    public EquipResult equipItem(UUID npcInstanceId, String itemId, String slot) {
+        logger.info("[MOCK] Equipping item " + itemId + " to slot " + slot + " for NPC " + npcInstanceId);
+        return EquipResult.success(itemId, slot.equals("auto") ? "hotbar_0" : slot, null);
+    }
+
+    @Override
+    public BreakResult breakBlock(UUID npcInstanceId, Location targetBlock, String toolItemId, int maxAttempts) {
+        logger.info("[MOCK] Breaking block at " + targetBlock + " for NPC " + npcInstanceId);
+        // Simulate breaking a wood block
+        List<Map<String, Object>> drops = List.of(
+            Map.of("itemId", "Wood_Beech", "quantity", 2),
+            Map.of("itemId", "Sapling_Beech", "quantity", 1)
+        );
+        Map<String, Object> dropLocation = Map.of("x", targetBlock.x(), "y", targetBlock.y(), "z", targetBlock.z());
+        return BreakResult.success("Wood_Beech_Trunk", 5, drops, dropLocation, 45.0);
+    }
+
+    @Override
+    public PickupResult pickupItems(UUID npcInstanceId, double radius, String itemId, int maxItems) {
+        logger.info("[MOCK] Picking up items within " + radius + " blocks for NPC " + npcInstanceId);
+        List<Map<String, Object>> items = List.of(
+            Map.of("itemId", itemId != null ? itemId : "Wood_Beech", "quantity", 2)
+        );
+        return PickupResult.success(2, items, 0);
+    }
+
+    @Override
+    public UseResult useHeldItem(UUID npcInstanceId, Location target, int useCount, long intervalMs, TargetType targetType) {
+        logger.info("[MOCK] Using held item " + useCount + " times on " + targetType + " at " + target + " for NPC " + npcInstanceId);
+        return UseResult.success(useCount, false, null, false);
+    }
+
+    @Override
+    public DropResult dropItem(UUID npcInstanceId, String itemId, int quantity, float throwSpeed) {
+        logger.info("[MOCK] Dropping " + quantity + "x " + itemId + " with speed " + throwSpeed + " for NPC " + npcInstanceId);
+        return DropResult.success(itemId, quantity, 0);
+    }
+
+    @Override
+    public InventorySnapshot getInventory(UUID npcInstanceId, boolean includeEmpty) {
+        logger.info("[MOCK] Getting inventory for NPC " + npcInstanceId);
+        Map<String, Object> armor = Map.of(
+            "head", Map.of("itemId", "Helmet_Iron", "quantity", 1),
+            "chest", Map.of("itemId", "Chestplate_Leather", "quantity", 1)
+        );
+        List<Map<String, Object>> hotbar = List.of(
+            Map.of("slot", 0, "itemId", "Axe_Steel", "quantity", 1, "isActive", true),
+            Map.of("slot", 1, "itemId", "Pickaxe_Stone", "quantity", 1, "isActive", false),
+            Map.of("slot", 2, "itemId", null, "quantity", 0, "isActive", false)
+        );
+        List<Map<String, Object>> storage = List.of();
+        Map<String, Object> heldItem = Map.of("itemId", "Axe_Steel", "quantity", 1);
+        return InventorySnapshot.create(armor, hotbar, storage, heldItem, 3);
+    }
+
+    @Override
+    public UnequipResult unequipItem(UUID npcInstanceId, String slot, boolean destroy) {
+        logger.info("[MOCK] Unequipping item from slot " + slot + " (destroy=" + destroy + ") for NPC " + npcInstanceId);
+        Map<String, Object> itemRemoved = Map.of("itemId", "Helmet_Iron", "quantity", 1);
+        if (destroy) {
+            return UnequipResult.destroyed(slot, itemRemoved);
+        }
+        return UnequipResult.success(slot, itemRemoved, true);
+    }
+
+    @Override
+    public boolean expandNpcInventory(UUID npcInstanceId, int storageSlots) {
+        logger.info("[MOCK] Expanding inventory by " + storageSlots + " slots for NPC " + npcInstanceId);
+        return true;
+    }
 }

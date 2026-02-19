@@ -159,6 +159,14 @@ public class ActionExecutor {
                 case "get_current_position" -> executeGetCurrentPosition(npcInstanceData, ack);
                 case "wait" -> executeWait(npcInstanceData, params, ack);
                 case "teleport_player" -> executeTeleportPlayer(npcInstanceData, playerId, params, ack);
+                // Inventory management actions
+                case "equip_item" -> executeEquipItem(npcInstanceData, params, ack);
+                case "break_block" -> executeBreakBlock(npcInstanceData, params, ack);
+                case "pickup_item" -> executePickupItem(npcInstanceData, params, ack);
+                case "use_held_item" -> executeUseHeldItem(npcInstanceData, params, ack);
+                case "drop_item" -> executeDropItem(npcInstanceData, params, ack);
+                case "get_inventory" -> executeGetInventory(npcInstanceData, params, ack);
+                case "unequip_item" -> executeUnequipItem(npcInstanceData, params, ack);
                 default -> {
                     logger.warn("Unknown action received: " + action);
                     if (ack != null)
@@ -747,6 +755,289 @@ public class ActionExecutor {
         if (config.logging().logActions()) {
             logger.info("[NPC:" + npcInstanceId + "] teleport player [" + playerId + "] to " + locationName + 
                     " (" + x + ", " + y + ", " + z + "): " + (success ? "SUCCESS" : "FAILED"));
+        }
+    }
+
+    // ========== Inventory Management Methods ==========
+
+    /**
+     * EQUIP_ITEM - Equip an item to the NPC
+     */
+    private void executeEquipItem(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        String itemId = params != null ? params.optString("itemId", "") : "";
+        String slot = params != null ? params.optString("slot", "auto") : "auto";
+
+        if (itemId.isEmpty()) {
+            logger.warn("Equip item action without itemId for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"Missing itemId\"}");
+            return;
+        }
+
+        var result = hytaleAPI.equipItem(npcInstanceId, itemId, slot);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("itemId", result.itemId() != null ? result.itemId() : org.json.JSONObject.NULL);
+            json.put("equippedSlot", result.equippedSlot() != null ? result.equippedSlot() : org.json.JSONObject.NULL);
+            json.put("previousItem", result.previousItem() != null ? new org.json.JSONObject(result.previousItem()) : org.json.JSONObject.NULL);
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] equip " + itemId + " to " + slot + ": " + 
+                    (result.success() ? "SUCCESS" : "FAILED"));
+        }
+    }
+
+    /**
+     * BREAK_BLOCK - Break a block and return drops
+     */
+    private void executeBreakBlock(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"blockBroken\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        if (params == null) {
+            logger.warn("Break block action without params for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"success\": false, \"blockBroken\": false, \"error\": \"Missing parameters\"}");
+            return;
+        }
+
+        double x = params.optDouble("targetX");
+        double y = params.optDouble("targetY");
+        double z = params.optDouble("targetZ");
+        String toolItemId = params.optString("toolItemId", null);
+        int maxAttempts = params.optInt("maxAttempts", 20);
+
+        Location target = Location.of(x, y, z);
+
+        var result = hytaleAPI.breakBlock(npcInstanceId, target, toolItemId, maxAttempts);
+
+        if (ack != null) {
+            // Build JSON manually since org.json.JSONObject doesn't handle records well
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("blockBroken", result.blockBroken());
+            json.put("blockId", result.blockId() != null ? result.blockId() : org.json.JSONObject.NULL);
+            json.put("attemptsNeeded", result.attemptsNeeded());
+            json.put("drops", result.drops() != null ? new org.json.JSONArray(result.drops()) : org.json.JSONObject.NULL);
+            json.put("dropsDetectedAt", result.dropsDetectedAt() != null ? new org.json.JSONObject(result.dropsDetectedAt()) : org.json.JSONObject.NULL);
+            json.put("toolDurabilityRemaining", result.toolDurabilityRemaining() != null ? result.toolDurabilityRemaining() : org.json.JSONObject.NULL);
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] break block at " + target + ": " + 
+                    (result.blockBroken() ? "BROKEN" : "FAILED"));
+        }
+    }
+
+    /**
+     * PICKUP_ITEM - Pick up dropped items near the NPC
+     */
+    private void executePickupItem(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        double radius = params != null ? params.optDouble("radius", 5) : 5;
+        String itemId = params != null ? params.optString("itemId", null) : null;
+        int maxItems = params != null ? params.optInt("maxItems", 10) : 10;
+
+        var result = hytaleAPI.pickupItems(npcInstanceId, radius, itemId, maxItems);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("itemsPickedUp", result.itemsPickedUp());
+            json.put("itemsByType", result.itemsByType() != null ? new org.json.JSONArray(result.itemsByType()) : org.json.JSONObject.NULL);
+            json.put("itemsRemaining", result.itemsRemaining());
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] pickup items within " + radius + " blocks: " + 
+                    result.itemsPickedUp() + " items picked up");
+        }
+    }
+
+    /**
+     * USE_HELD_ITEM - Use the currently held item multiple times
+     */
+    private void executeUseHeldItem(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        if (params == null) {
+            logger.warn("Use held item action without params for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"Missing parameters\"}");
+            return;
+        }
+
+        double x = params.optDouble("targetX");
+        double y = params.optDouble("targetY");
+        double z = params.optDouble("targetZ");
+        int useCount = params.optInt("useCount", 1);
+        long useIntervalMs = params.optLong("useIntervalMs", 400);
+        String targetTypeStr = params.optString("targetType", "block");
+
+        Location target = Location.of(x, y, z);
+        var targetType = "entity".equals(targetTypeStr) ? 
+                dev.hycompanion.plugin.api.HytaleAPI.TargetType.ENTITY : 
+                dev.hycompanion.plugin.api.HytaleAPI.TargetType.BLOCK;
+
+        var result = hytaleAPI.useHeldItem(npcInstanceId, target, useCount, useIntervalMs, targetType);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("usesPerformed", result.usesPerformed());
+            json.put("targetDestroyed", result.targetDestroyed() != null ? result.targetDestroyed() : org.json.JSONObject.NULL);
+            json.put("targetHealthRemaining", result.targetHealthRemaining() != null ? result.targetHealthRemaining() : org.json.JSONObject.NULL);
+            json.put("toolBroke", result.toolBroke());
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] use held item " + useCount + " times: " + 
+                    result.usesPerformed() + " uses performed");
+        }
+    }
+
+    /**
+     * DROP_ITEM - Drop an item from inventory to the ground
+     */
+    private void executeDropItem(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        String itemId = params != null ? params.optString("itemId", "") : "";
+        int quantity = params != null ? params.optInt("quantity", 1) : 1;
+        float throwSpeed = (float) (params != null ? params.optDouble("throwSpeed", 1.0) : 1.0);
+
+        if (itemId.isEmpty()) {
+            logger.warn("Drop item action without itemId for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"Missing itemId\"}");
+            return;
+        }
+
+        var result = hytaleAPI.dropItem(npcInstanceId, itemId, quantity, throwSpeed);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("itemId", result.itemId() != null ? result.itemId() : org.json.JSONObject.NULL);
+            json.put("quantityDropped", result.quantityDropped());
+            json.put("remainingQuantity", result.remainingQuantity());
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] drop " + quantity + "x " + itemId + ": " + 
+                    (result.success() ? "SUCCESS" : "FAILED"));
+        }
+    }
+
+    /**
+     * GET_INVENTORY - Get the NPC's current inventory contents
+     */
+    private void executeGetInventory(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        boolean includeEmpty = params != null ? params.optBoolean("includeEmpty", false) : false;
+
+        var result = hytaleAPI.getInventory(npcInstanceId, includeEmpty);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("armor", result.armor() != null ? new org.json.JSONObject(result.armor()) : org.json.JSONObject.NULL);
+            json.put("hotbar", result.hotbar() != null ? new org.json.JSONArray(result.hotbar()) : org.json.JSONObject.NULL);
+            json.put("storage", result.storage() != null ? new org.json.JSONArray(result.storage()) : org.json.JSONObject.NULL);
+            json.put("heldItem", result.heldItem() != null ? new org.json.JSONObject(result.heldItem()) : org.json.JSONObject.NULL);
+            json.put("totalItems", result.totalItems());
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] get inventory: " + result.totalItems() + " items total");
+        }
+    }
+
+    /**
+     * UNEQUIP_ITEM - Remove an item from a specific slot
+     */
+    private void executeUnequipItem(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        String slot = params != null ? params.optString("slot", "") : "";
+        boolean destroy = params != null ? params.optBoolean("destroy", false) : false;
+
+        if (slot.isEmpty()) {
+            logger.warn("Unequip item action without slot for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"Missing slot\"}");
+            return;
+        }
+
+        var result = hytaleAPI.unequipItem(npcInstanceId, slot, destroy);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("slot", result.slot() != null ? result.slot() : org.json.JSONObject.NULL);
+            json.put("itemRemoved", result.itemRemoved() != null ? new org.json.JSONObject(result.itemRemoved()) : org.json.JSONObject.NULL);
+            json.put("movedToStorage", result.movedToStorage());
+            json.put("destroyed", result.destroyed());
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] unequip item from " + slot + 
+                    (destroy ? " (destroyed)" : "") + ": " + (result.success() ? "SUCCESS" : "FAILED"));
         }
     }
 }

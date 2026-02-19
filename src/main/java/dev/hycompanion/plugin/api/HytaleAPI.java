@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import dev.hycompanion.plugin.api.inventory.*;
 import dev.hycompanion.plugin.core.npc.NpcInstanceData;
 import dev.hycompanion.plugin.core.npc.NpcMoveResult;
 
@@ -434,6 +435,91 @@ public interface HytaleAPI {
     default void cleanup() {
     }
 
+    // ========== Inventory Operations ==========
+
+    /**
+     * Equip an item to the NPC (armor or weapon/tool)
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param itemId        The item ID to equip
+     * @param slot          Target slot (auto, head, chest, hands, legs, hotbar_0, hotbar_1, hotbar_2)
+     * @return Result of the equip operation
+     */
+    EquipResult equipItem(UUID npcInstanceId, String itemId, String slot);
+
+    /**
+     * Break a block and return the drops
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param targetBlock   The block location to break
+     * @param toolItemId    Optional tool to use (null for held item)
+     * @param maxAttempts   Maximum attempts before giving up
+     * @return Result of the break operation
+     */
+    BreakResult breakBlock(UUID npcInstanceId, Location targetBlock, String toolItemId, int maxAttempts);
+
+    /**
+     * Pick up dropped items near the NPC
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param radius        Pickup radius in blocks
+     * @param itemId        Optional specific item ID to pick up (null for any)
+     * @param maxItems      Maximum items to pick up
+     * @return Result of the pickup operation
+     */
+    PickupResult pickupItems(UUID npcInstanceId, double radius, String itemId, int maxItems);
+
+    /**
+     * Use the currently held item multiple times
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param target        Target location (block or entity)
+     * @param useCount      Number of times to use the item
+     * @param intervalMs    Interval between uses in milliseconds
+     * @param targetType    Type of target (block or entity)
+     * @return Result of the use operation
+     */
+    UseResult useHeldItem(UUID npcInstanceId, Location target, int useCount, long intervalMs, TargetType targetType);
+
+    /**
+     * Drop an item from inventory to the ground
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param itemId        The item ID to drop
+     * @param quantity      Quantity to drop
+     * @param throwSpeed    Throw speed (0.5=gentle, 1.0=normal, 2.0=far)
+     * @return Result of the drop operation
+     */
+    DropResult dropItem(UUID npcInstanceId, String itemId, int quantity, float throwSpeed);
+
+    /**
+     * Get the NPC's current inventory contents
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param includeEmpty  Whether to include empty slots in the response
+     * @return Snapshot of the inventory
+     */
+    InventorySnapshot getInventory(UUID npcInstanceId, boolean includeEmpty);
+
+    /**
+     * Unequip an item from a specific slot
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param slot          Slot to unequip
+     * @param destroy       If true, destroys the item instead of moving to storage
+     * @return Result of the unequip operation
+     */
+    UnequipResult unequipItem(UUID npcInstanceId, String slot, boolean destroy);
+
+    /**
+     * Expand the NPC's inventory storage capacity
+     * 
+     * @param npcInstanceId The instance ID of the NPC
+     * @param storageSlots  Number of storage slots to add
+     * @return true if expansion was successful
+     */
+    boolean expandNpcInventory(UUID npcInstanceId, int storageSlots);
+
     // ========== NPC Respawn Operations ==========
 
     /**
@@ -453,5 +539,13 @@ public interface HytaleAPI {
      * @param externalId The external ID (role) of the NPC whose respawn should be cancelled
      */
     default void cancelNpcRespawn(String externalId) {
+    }
+
+    /**
+     * Target type for useHeldItem operation
+     */
+    enum TargetType {
+        BLOCK,
+        ENTITY
     }
 }
