@@ -62,10 +62,6 @@ public class SocketManager {
     // Flag to track intentional disconnects (to prevent auto-reconnect)
     private final AtomicBoolean intentionalDisconnect = new AtomicBoolean(false);
 
-    // Cached blocks - discovered once and reused across reconnections
-    private java.util.List<dev.hycompanion.plugin.core.world.BlockInfo> cachedBlocks = null;
-    private final AtomicBoolean blocksSent = new AtomicBoolean(false);
-
     public SocketManager(
             String url,
             String apiKey,
@@ -216,24 +212,6 @@ public class SocketManager {
         return connected.get();
     }
 
-    /**
-     * Clear the cached blocks to force re-discovery on next connection.
-     * Useful when block definitions change or for explicit reloads.
-     */
-    public void clearBlockCache() {
-        cachedBlocks = null;
-        blocksSent.set(false);
-        logger.info("[Socket] Block cache cleared");
-    }
-
-    /**
-     * Get the cached blocks if available.
-     * 
-     * @return Cached blocks or null if not yet discovered
-     */
-    public java.util.List<dev.hycompanion.plugin.core.world.BlockInfo> getCachedBlocks() {
-        return cachedBlocks;
-    }
 
     /**
      * Send chat message to backend
@@ -454,43 +432,42 @@ public class SocketManager {
         logger.info("[Socket] Sending PLUGIN_CONNECT with apiKey and serverInfo");
         socket.emit(SocketEvents.PLUGIN_CONNECT, new org.json.JSONObject(payload.toString()));
 
-        // Send available blocks to backend after a short delay to ensure connection is
-        // ready
-        // This enables LLM to understand what blocks exist on this server
-        // Blocks are discovered once and cached, then sent on each connection
-        // (including reconnections)
-        logger.info("[Socket] Will report available blocks in 2 seconds...");
-        Thread.ofVirtual().start(() -> {
-            try {
-                Thread.sleep(2000); // Wait for connection to be fully established
-                if (!isConnected()) {
-                    logger.debug("[Socket] No longer connected, skipping block report");
-                    return;
-                }
-
-                // Discover blocks once and cache them
-                if (cachedBlocks == null) {
-                    logger.info("[Socket] Discovering blocks for the first time...");
-                    cachedBlocks = hytaleAPI.getAvailableBlocks();
-                    if (cachedBlocks == null || cachedBlocks.isEmpty()) {
-                        logger.warn("[Socket] No blocks discovered");
-                        return;
-                    }
-                    logger.info("[Socket] Discovered and cached " + cachedBlocks.size() + " blocks");
-                }
-
-                // Send cached blocks (on every connection, including reconnections)
-                if (cachedBlocks != null && !cachedBlocks.isEmpty()) {
-                    sendAvailableBlocks(cachedBlocks);
-                    blocksSent.set(true);
-                }
-                // } catch (InterruptedException e) {
-                // Thread.currentThread().interrupt();
-            } catch (Exception e) {
-                logger.error("[Socket] Error reporting available blocks: " + e.getMessage());
-                Sentry.captureException(e);
-            }
-        });
+        // Block discovery/report is intentionally disabled.
+        // We now rely on runtime scanBlocks results instead of plugin:blocks_available.
+        /*
+         * logger.info("[Socket] Will report available blocks in 2 seconds...");
+         * Thread.ofVirtual().start(() -> {
+         * try {
+         * Thread.sleep(2000); // Wait for connection to be fully established
+         * if (!isConnected()) {
+         * logger.debug("[Socket] No longer connected, skipping block report");
+         * return;
+         * }
+         * 
+         * // Discover blocks once and cache them
+         * if (cachedBlocks == null) {
+         * logger.info("[Socket] Discovering blocks for the first time...");
+         * cachedBlocks = hytaleAPI.getAvailableBlocks();
+         * if (cachedBlocks == null || cachedBlocks.isEmpty()) {
+         * logger.warn("[Socket] No blocks discovered");
+         * return;
+         * }
+         * logger.info("[Socket] Discovered and cached " + cachedBlocks.size() + " blocks");
+         * }
+         * 
+         * // Send cached blocks (on every connection, including reconnections)
+         * if (cachedBlocks != null && !cachedBlocks.isEmpty()) {
+         * sendAvailableBlocks(cachedBlocks);
+         * blocksSent.set(true);
+         * }
+         * // } catch (InterruptedException e) {
+         * // Thread.currentThread().interrupt();
+         * } catch (Exception e) {
+         * logger.error("[Socket] Error reporting available blocks: " + e.getMessage());
+         * Sentry.captureException(e);
+         * }
+         * });
+         */
     }
 
     /**

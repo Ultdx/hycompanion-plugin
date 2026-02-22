@@ -2,10 +2,12 @@ package dev.hycompanion.plugin.role;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.hycompanion.plugin.utils.PluginLogger;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
@@ -42,32 +44,73 @@ public class RoleGenerator {
      */
     public void ensureModManifest() {
         Path manifestPath = modDirectory.resolve("manifest.json");
-        if (Files.exists(manifestPath)) {
-            logger.debug("Mod manifest already exists at: " + manifestPath);
-            return;
-        }
-
         try {
-            // Asset pack manifest must match plugin Group:Name for Hytale to associate them
-            // Plugin manifest has: "Group": "dev.hycompanion", "Name": "Hycompanion"
-            String manifest = """
-                    {
-                        "Group": "dev.hycompanion",
-                        "Name": "Hycompanion",
-                        "Version": "1.1.4",
-                        "Description": "Hycompanion dynamic NPC role assets"
-                    }
-                    """;
-            Files.writeString(manifestPath, manifest);
-            manifestCreatedThisSession = true;
-            logger.info("Created mod manifest at: " + manifestPath);
-            logger.warn("=================================================================");
-            logger.warn("RESTART REQUIRED: manifest.json was created for the asset pack.");
-            logger.warn("Please restart the server for Hytale to load the new NPC roles.");
-            logger.warn("=================================================================");
+            String targetServerVersion = resolveServerVersionFromPluginManifest();
+
+            JsonObject manifestJson;
+            boolean created = false;
+            if (Files.exists(manifestPath)) {
+                String existingContent = Files.readString(manifestPath);
+                JsonElement parsed = GSON.fromJson(existingContent, JsonElement.class);
+                if (parsed == null || !parsed.isJsonObject()) {
+                    manifestJson = new JsonObject();
+                } else {
+                    manifestJson = parsed.getAsJsonObject();
+                }
+            } else {
+                manifestJson = new JsonObject();
+                created = true;
+            }
+
+            // Asset pack identity must match plugin manifest identity for reliable role/animation loading.
+            manifestJson.addProperty("Group", "dev.hycompanion");
+            manifestJson.addProperty("Name", "Hycompanion");
+            if (!manifestJson.has("Version") || manifestJson.get("Version").isJsonNull()) {
+                manifestJson.addProperty("Version", "1.1.5");
+            }
+            if (!manifestJson.has("Description") || manifestJson.get("Description").isJsonNull()) {
+                manifestJson.addProperty("Description", "Hycompanion dynamic NPC role assets");
+            }
+
+            // Critical for new server validation: explicit target server version.
+            manifestJson.addProperty("ServerVersion", targetServerVersion);
+
+            Files.writeString(manifestPath, GSON.toJson(manifestJson));
+            if (created) {
+                manifestCreatedThisSession = true;
+                logger.info("Created mod manifest at: " + manifestPath);
+                logger.warn("=================================================================");
+                logger.warn("RESTART REQUIRED: manifest.json was created for the asset pack.");
+                logger.warn("Please restart the server for Hytale to load the new NPC roles.");
+                logger.warn("=================================================================");
+            } else {
+                logger.debug("Validated/updated mod manifest at: " + manifestPath + " (ServerVersion=" + targetServerVersion + ")");
+            }
         } catch (Exception e) {
             logger.error("Failed to create mod manifest: " + e.getMessage());
         }
+    }
+
+    private String resolveServerVersionFromPluginManifest() {
+        try (var in = RoleGenerator.class.getClassLoader().getResourceAsStream("manifest.json")) {
+            if (in == null) {
+                return "*";
+            }
+            String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            JsonElement parsed = GSON.fromJson(content, JsonElement.class);
+            if (parsed != null && parsed.isJsonObject()) {
+                JsonObject json = parsed.getAsJsonObject();
+                if (json.has("ServerVersion") && !json.get("ServerVersion").isJsonNull()) {
+                    String value = json.get("ServerVersion").getAsString();
+                    if (value != null && !value.isBlank()) {
+                        return value;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Keep default fallback if resource cannot be parsed.
+        }
+        return "*";
     }
 
     /**
@@ -169,7 +212,7 @@ public class RoleGenerator {
                 try {
                     payload.put("apiKey", apiKey);
                     var serverInfo = new org.json.JSONObject();
-                    serverInfo.put("version", "1.1.4-SNAPSHOT");
+                    serverInfo.put("version", "1.1.5-SNAPSHOT");
                     serverInfo.put("playerCount", 0);
                     payload.put("serverInfo", serverInfo);
                 } catch (Exception e) {

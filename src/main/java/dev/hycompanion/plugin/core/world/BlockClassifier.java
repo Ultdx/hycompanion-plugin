@@ -121,7 +121,7 @@ public class BlockClassifier {
             Map<String, String[]> tags, List<String> categories) {
         String normalizedId = normalize(blockId);
         String normalizedName = normalize(displayName);
-        String combined = normalizedId + " " + normalizedName;
+        String combined = normalizeWhitespace(normalizedId + " " + normalizedName);
         
         // Extract keywords from ID and name
         Set<String> keywords = extractKeywords(combined);
@@ -149,7 +149,7 @@ public class BlockClassifier {
             List<String> indicators = entry.getValue();
             
             for (String indicator : indicators) {
-                if (combined.contains(indicator)) {
+                if (containsIndicatorWithBoundaries(combined, indicator)) {
                     if (!materialTypes.contains(material)) {
                         materialTypes.add(material);
                     }
@@ -229,12 +229,12 @@ public class BlockClassifier {
      * Useful for filtering.
      */
     public static List<String> getMaterialTypes(String blockId, String displayName) {
-        String combined = normalize(blockId) + " " + normalize(displayName);
+        String combined = normalizeWhitespace(normalize(blockId) + " " + normalize(displayName));
         List<String> types = new ArrayList<>();
         
         for (Map.Entry<String, List<String>> entry : MATERIAL_KEYWORDS.entrySet()) {
             for (String indicator : entry.getValue()) {
-                if (combined.contains(indicator)) {
+                if (containsIndicatorWithBoundaries(combined, indicator)) {
                     types.add(entry.getKey());
                     break;
                 }
@@ -259,6 +259,42 @@ public class BlockClassifier {
         return input.toLowerCase()
                    .replace("_", " ")
                    .replace("-", " ");
+    }
+
+    /**
+     * Collapse repeated whitespace to simplify boundary-aware matching.
+     */
+    private static String normalizeWhitespace(String input) {
+        return input.trim().replaceAll("\\s+", " ");
+    }
+
+    /**
+     * Matches indicator as a whole token or multi-token phrase.
+     * Example: "flow" matches "_Flow_" but not "flower".
+     */
+    private static boolean containsIndicatorWithBoundaries(String combined, String indicator) {
+        String normalizedIndicator = normalizeWhitespace(normalize(indicator));
+        if (normalizedIndicator.isEmpty()) {
+            return false;
+        }
+
+        int fromIndex = 0;
+        while (true) {
+            int matchStart = combined.indexOf(normalizedIndicator, fromIndex);
+            if (matchStart < 0) {
+                return false;
+            }
+
+            int matchEnd = matchStart + normalizedIndicator.length();
+            boolean leftBoundary = matchStart == 0 || combined.charAt(matchStart - 1) == ' ';
+            boolean rightBoundary = matchEnd == combined.length() || combined.charAt(matchEnd) == ' ';
+
+            if (leftBoundary && rightBoundary) {
+                return true;
+            }
+
+            fromIndex = matchStart + 1;
+        }
     }
     
     /**

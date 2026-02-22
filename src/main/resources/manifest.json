@@ -9,7 +9,7 @@
         }
     ],
     "Website": "https://hycompanion.dev",
-    "ServerVersion": "*",
+    "ServerVersion": "${hytale.server.version}",
     "Dependencies": {},
     "OptionalDependencies": {},
     "DisabledByDefault": false,

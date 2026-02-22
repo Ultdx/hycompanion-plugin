@@ -35,8 +35,20 @@ if defined SENTRY_AUTH_TOKEN (
     echo.
 )
 
+:: MVN install dependencies
+echo [1/3] Installing dependencies...
+call mvn install -q
+if %errorlevel% neq 0 (
+    echo.
+    echo ========================================
+    echo   DEPENDENCIES INSTALLATION FAILED!
+    echo ========================================
+    pause
+    exit /b 1
+)
+
 :: Clean and compile with Maven
-echo [1/2] Compiling...
+echo [2/3] Compiling...
 call mvn compile -q
 if %errorlevel% neq 0 (
     echo.
@@ -48,7 +60,7 @@ if %errorlevel% neq 0 (
 )
 
 :: Package the plugin with Sentry auth token if available
-echo [2/2] Packaging plugin with dependencies...
+echo [3/3] Packaging plugin with dependencies...
 if defined SENTRY_AUTH_TOKEN (
     call mvn package -DskipTests -q -Denv.SENTRY_AUTH_TOKEN=%SENTRY_AUTH_TOKEN%
 ) else (

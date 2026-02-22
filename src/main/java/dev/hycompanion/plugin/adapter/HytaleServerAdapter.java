@@ -55,6 +55,7 @@ import dev.hycompanion.plugin.api.inventory.*;
 import dev.hycompanion.plugin.core.npc.NpcData;
 import dev.hycompanion.plugin.core.npc.NpcInstanceData;
 import dev.hycompanion.plugin.core.npc.NpcMoveResult;
+import dev.hycompanion.plugin.network.PacketDispatchUtil;
 import dev.hycompanion.plugin.shutdown.ShutdownManager;
 import dev.hycompanion.plugin.utils.PluginLogger;
 import java.lang.reflect.Field;
@@ -90,6 +91,9 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     // Track NPC locations cache REMOVED - Using real-time location via
     // getNpcInstanceLocation
+    // Keep last known locations as a fallback when world thread is temporarily
+    // saturated.
+    private final Map<UUID, Location> lastKnownNpcLocations = new ConcurrentHashMap<>();
 
     // Use private daemon scheduler instead of HytaleServer.SCHEDULED_EXECUTOR
     private final ScheduledExecutorService rotationScheduler = java.util.concurrent.Executors.newScheduledThreadPool(1,
@@ -113,7 +117,8 @@ public class HytaleServerAdapter implements HytaleAPI {
     // moving
     private final Set<UUID> busyNpcs = ConcurrentHashMap.newKeySet();
 
-    // Thinking indicator references per NPC - stored separately for atomic operations
+    // Thinking indicator references per NPC - stored separately for atomic
+    // operations
     // Key present with valid ref = indicator exists; Key absent = no indicator
     private final Map<UUID, Ref<EntityStore>> thinkingIndicatorRefs = new ConcurrentHashMap<>();
 
@@ -228,12 +233,12 @@ public class HytaleServerAdapter implements HytaleAPI {
         } catch (Exception e) {
             // Ignore, will fall back to default
         }
-        
+
         // Fall back to default world
         if (world == null) {
             world = Universe.get().getDefaultWorld();
         }
-        
+
         if (world == null)
             return;
 
@@ -273,12 +278,12 @@ public class HytaleServerAdapter implements HytaleAPI {
         } catch (Exception e) {
             // Ignore, will fall back to default
         }
-        
+
         // Fall back to default world
         if (world == null) {
             world = Universe.get().getDefaultWorld();
         }
-        
+
         if (world == null)
             return;
 
@@ -312,7 +317,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
 
         // For broadcasting, players could be in different worlds.
-        // We use the default world's executor for simplicity since PlayerRef.sendMessage()
+        // We use the default world's executor for simplicity since
+        // PlayerRef.sendMessage()
         // works regardless of which world thread we're on.
         World world = Universe.get().getDefaultWorld();
         if (world == null)
@@ -357,12 +363,12 @@ public class HytaleServerAdapter implements HytaleAPI {
         } catch (Exception e) {
             // Ignore, will fall back to default
         }
-        
+
         // Fall back to default world
         if (world == null) {
             world = Universe.get().getDefaultWorld();
         }
-        
+
         if (world == null)
             return;
 
@@ -417,22 +423,22 @@ public class HytaleServerAdapter implements HytaleAPI {
             if (playerRef == null) {
                 return false;
             }
-            
+
             // Get the Player component from the entity to check permissions
             // Player implements PermissionHolder interface
             Ref<EntityStore> ref = playerRef.getReference();
             if (ref == null || !ref.isValid()) {
                 return false;
             }
-            
+
             Store<EntityStore> store = ref.getStore();
-            com.hypixel.hytale.server.core.entity.entities.Player player = 
-                store.getComponent(ref, com.hypixel.hytale.server.core.entity.entities.Player.getComponentType());
-            
+            com.hypixel.hytale.server.core.entity.entities.Player player = store.getComponent(ref,
+                    com.hypixel.hytale.server.core.entity.entities.Player.getComponentType());
+
             if (player == null) {
                 return false;
             }
-            
+
             // Check if player has operator privileges using the permission system
             // "*" is the wildcard permission that typically indicates OP status
             // Also check for the specific hycompanion.admin permission
@@ -457,7 +463,8 @@ public class HytaleServerAdapter implements HytaleAPI {
             World world = getWorldByName(location.world());
             if (world == null) {
                 world = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] spawnNpc: Could not find world '" + location.world() + "', falling back to default world");
+                logger.warn("[Hycompanion] spawnNpc: Could not find world '" + location.world()
+                        + "', falling back to default world");
             }
 
             if (world == null) {
@@ -657,7 +664,8 @@ public class HytaleServerAdapter implements HytaleAPI {
             World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
             if (resolvedWorld == null) {
                 resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] removeNpc: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                logger.warn("[Hycompanion] removeNpc: Could not find world '" + worldName
+                        + "' for NPC, falling back to default world");
             }
             if (resolvedWorld != null) {
                 final World world = resolvedWorld;
@@ -711,7 +719,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         // Remove from tracking
         npcInstanceEntities.remove(npcInstanceId);
-        
+
         // Notify removal
         if (removalListener != null) {
             removalListener.accept(npcInstanceId);
@@ -757,7 +765,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         if (respawnCheckerTask != null && !respawnCheckerTask.isDone()) {
             return; // Already running
         }
-        
+
         respawnCheckerTask = rotationScheduler.scheduleAtFixedRate(() -> {
             if (isShuttingDown() || Thread.currentThread().isInterrupted()) {
                 return;
@@ -776,7 +784,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         Instant now = Instant.now(); // Realtime check is fine for scheduling
         List<String> toRespawn = new ArrayList<>();
-        
+
         // Find due respawns
         for (Map.Entry<String, Instant> entry : pendingRespawns.entrySet()) {
             if (entry.getValue().isBefore(now)) {
@@ -804,7 +812,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         World resolvedWorld = getWorldByName(spawnLocation.world());
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] executeRespawn: Could not find world '" + spawnLocation.world() + "' for NPC, falling back to default world");
+            logger.warn("[Hycompanion] executeRespawn: Could not find world '" + spawnLocation.world()
+                    + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             logger.error("[Hycompanion] World not available for respawn of '" + externalId + "'");
@@ -848,8 +857,9 @@ public class HytaleServerAdapter implements HytaleAPI {
                 npcEntity.setLeashPitch(rotation.getPitch());
 
                 UUID entityUuid = npcEntity.getUuid();
-                NpcInstanceData instance = new NpcInstanceData(entityUuid, entityRef, npcEntity, npcData, spawnLocation);
-                
+                NpcInstanceData instance = new NpcInstanceData(entityUuid, entityRef, npcEntity, npcData,
+                        spawnLocation);
+
                 applyNpcCapabilities(store, entityRef, npcEntity, npcData, "Respawn");
                 npcInstanceEntities.put(entityUuid, instance);
                 plugin.getNpcManager().bindEntity(externalId, entityUuid);
@@ -890,16 +900,17 @@ public class HytaleServerAdapter implements HytaleAPI {
         for (Map.Entry<String, List<NpcInstanceData>> entry : instancesByWorld.entrySet()) {
             String worldName = entry.getKey();
             List<NpcInstanceData> worldInstances = entry.getValue();
-            
+
             World world = Universe.get().getWorld(worldName);
             if (world == null) {
                 world = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] updateNpcCapabilities: Could not find world '" + worldName + "', falling back to default world");
+                logger.warn("[Hycompanion] updateNpcCapabilities: Could not find world '" + worldName
+                        + "', falling back to default world");
             }
             if (world == null) {
                 continue;
             }
-            
+
             world.execute(() -> {
                 for (NpcInstanceData instance : worldInstances) {
                     try {
@@ -1036,13 +1047,15 @@ public class HytaleServerAdapter implements HytaleAPI {
             try {
                 // Get the world from the entity store and execute on world thread
                 Store<EntityStore> store = entityRef.getStore();
-                
+
                 // Get the correct world for this NPC, not the default world
-                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world()
+                        : null;
                 World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
                 if (resolvedWorld == null) {
                     resolvedWorld = Universe.get().getDefaultWorld();
-                    logger.warn("[Hycompanion] triggerNpcEmote: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                    logger.warn("[Hycompanion] triggerNpcEmote: Could not find world '" + worldName
+                            + "' for NPC, falling back to default world");
                 }
 
                 if (resolvedWorld != null) {
@@ -1100,13 +1113,15 @@ public class HytaleServerAdapter implements HytaleAPI {
         if (entityRef != null && entityRef.isValid()) {
             try {
                 Store<EntityStore> store = entityRef.getStore();
-                
+
                 // Get the correct world for this NPC, not the default world
-                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world()
+                        : null;
                 World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
                 if (resolvedWorld == null) {
                     resolvedWorld = Universe.get().getDefaultWorld();
-                    logger.warn("[Hycompanion] moveNpcTo: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                    logger.warn("[Hycompanion] moveNpcTo: Could not find world '" + worldName
+                            + "' for NPC, falling back to default world");
                 }
 
                 if (resolvedWorld != null) {
@@ -1147,22 +1162,28 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 if (npcEntity != null) {
                                     var role = npcEntity.getRole();
                                     if (role != null) {
-                                        // 2. Reset Animation/State
+                                        // 2. Reset animations/posture and clear any existing follow target/state.
+                                        npcInstanceData.resetAnimationsAndPosture(store, "moveNpcTo");
                                         try {
-                                            AnimationUtils.stopAnimation(entityRef, AnimationSlot.Action, true, store);
-                                            npcEntity.playAnimation(entityRef, AnimationSlot.Action, "Idle", store);
+                                            role.getMarkedEntitySupport().setMarkedEntity("LockedTarget", null);
+                                            role.getStateSupport().setState(entityRef, "Idle", null, store);
                                         } catch (Exception e) {
+                                            try {
+                                                role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                            } catch (Exception ignored) {
+                                            }
                                         }
-                                        try {
-                                            role.getStateSupport().setState(entityRef, "Idle", "Default", store);
-                                        } catch (Exception e) {
-                                        }
+                                        busyNpcs.remove(npcInstanceId);
 
                                         // 3. Set LockedTarget to our invisible entity
                                         role.getMarkedEntitySupport().setMarkedEntity("LockedTarget", targetRef);
 
                                         // 4. Set state to Follow
-                                        role.getStateSupport().setState(entityRef, "Follow", "Default", store);
+                                        try {
+                                            role.getStateSupport().setState(entityRef, "Follow", null, store);
+                                        } catch (Exception e) {
+                                            role.getStateSupport().setState(entityRef, "Follow", "Default", store);
+                                        }
                                         busyNpcs.add(npcInstanceId);
                                         logger.info("[Hycompanion] NPC started following target marker to " + location);
                                     }
@@ -1263,9 +1284,11 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 double dz = currentZ - location.z();
                                 double distSq = dx * dx + dy * dy + dz * dz;
 
-                                // Check arrival - Threshold: 9 blocks squared = 3 blocks actual distance
-                                if (distSq < 9.0) {
-                                    double distance = Math.sqrt(distSq);
+                                // Check arrival
+                                double distance = Math.sqrt(distSq);
+
+                                // Threshold: 1.5 blocks actual distance
+                                if (distSq <= 2.25) {
                                     logger.info("[Hycompanion] NPC arrived at destination, distance=" +
                                             String.format("%.2f", distance) + " blocks");
                                     Location finalLoc = Location.of(currentX, currentY, currentZ, "world");
@@ -1294,7 +1317,20 @@ public class HytaleServerAdapter implements HytaleAPI {
                                         // NPC hasn't moved much, check if stuck for 3+ seconds
                                         long timeSinceLastMove = now - (long) lastPos[3];
                                         if (timeSinceLastMove > STUCK_TIMEOUT_MS) {
-                                            double distance = Math.sqrt(distSq);
+                                            // Extra arrival check: If it's less than 5 blocks, consider it arrived.
+                                            // The Hytale AI pathfinding often struggles perfectly centering large
+                                            // models.
+                                            if (distSq <= 25.0) {
+                                                logger.info(
+                                                        "[Hycompanion] NPC practically arrived, stuck within 5 blocks. distance="
+                                                                +
+                                                                String.format("%.2f", distance) + " blocks");
+                                                Location finalLoc = Location.of(currentX, currentY, currentZ, "world");
+                                                result.complete(NpcMoveResult.success(finalLoc));
+                                                cleanupMovementAndResetState(npcInstanceId, entityRef, store);
+                                                return;
+                                            }
+
                                             logger.info(
                                                     "[Hycompanion] NPC stuck detected! No significant movement for " +
                                                             (timeSinceLastMove / 1000) + "s, distance=" +
@@ -1310,7 +1346,6 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                                 // Progress logging every 5 seconds (20 ticks * 250ms)
                                 if (currentTick % 10 == 0) {
-                                    double distance = Math.sqrt(distSq);
                                     logger.debug("[Hycompanion] NPC moving... distance=" +
                                             String.format("%.2f", distance) + " blocks to target");
                                 }
@@ -1395,9 +1430,14 @@ public class HytaleServerAdapter implements HytaleAPI {
             Store<EntityStore> store) {
         // Reset NPC state to Idle
         try {
+            NpcInstanceData instanceData = npcInstanceEntities.get(npcInstanceId);
+            if (instanceData != null) {
+                instanceData.resetAnimationsAndPosture(store, "cleanupMovement");
+            }
+
             NPCEntity npc = store.getComponent(entityRef, NPCEntity.getComponentType());
             if (npc != null && npc.getRole() != null) {
-                npc.getRole().getStateSupport().setState(entityRef, "Idle", "Default", store);
+                npc.getRole().getStateSupport().setState(entityRef, "Idle", null, store);
                 npc.getRole().getMarkedEntitySupport().setMarkedEntity("LockedTarget", null);
                 busyNpcs.remove(npcInstanceId);
             }
@@ -1428,7 +1468,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] findBlock: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            logger.warn("[Hycompanion] findBlock: Could not find world '" + worldName
+                    + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             future.complete(Optional.empty());
@@ -1588,7 +1629,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] scanBlocks: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            logger.warn("[Hycompanion] scanBlocks: Could not find world '" + worldName
+                    + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             future.complete(Optional.empty());
@@ -1611,9 +1653,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                     return;
                 }
                 Vector3d pos = transform.getPosition();
-                int startX = (int) Math.floor(pos.getX());
-                int startY = (int) Math.floor(pos.getY());
-                int startZ = (int) Math.floor(pos.getZ());
+                double exactX = pos.getX();
+                double exactY = pos.getY();
+                double exactZ = pos.getZ();
+
+                int startX = (int) Math.floor(exactX);
+                int startY = (int) Math.floor(exactY);
+                int startZ = (int) Math.floor(exactZ);
 
                 var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType
                         .getAssetMap();
@@ -1623,10 +1669,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                     return;
                 }
 
-                // Data structures to track found blocks
+                var fluidTypeAssetMap = com.hypixel.hytale.server.core.asset.type.fluid.Fluid.getAssetMap();
+
+                // Data structures to track found blocks/fluids
                 // Map<blockId, BlockScanInfo>
                 Map<String, BlockScanInfo> foundBlocks = new HashMap<>();
                 Map<String, Set<String>> categoryToBlockIds = new HashMap<>();
+                Map<String, FluidScanInfo> foundFluids = new HashMap<>();
 
                 // Spiral Search
                 com.hypixel.hytale.math.iterator.SpiralIterator iterator = new com.hypixel.hytale.math.iterator.SpiralIterator(
@@ -1645,19 +1694,51 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                     // Scan Y range (NPC height +/- 10 blocks)
                     for (int y = Math.max(0, startY - 10); y <= Math.min(255, startY + 10); y++) {
+                        // Calculate exact distance to voxel center (shared by block + fluid scanning)
+                        double voxelCenterX = x + 0.5;
+                        double voxelCenterY = y + 0.5;
+                        double voxelCenterZ = z + 0.5;
+
+                        double distance = Math.sqrt(
+                                Math.pow(voxelCenterX - exactX, 2) +
+                                        Math.pow(voxelCenterY - exactY, 2) +
+                                        Math.pow(voxelCenterZ - exactZ, 2));
+
+                        // Scan fluid at this voxel first (fluids are stored separately from blocks)
+                        if (fluidTypeAssetMap != null) {
+                            int fluidIdInt = chunk.getFluidId(x, y, z);
+                            if (fluidIdInt > 0) {
+                                var fluidType = fluidTypeAssetMap.getAsset(fluidIdInt);
+                                if (fluidType != null) {
+                                    String fluidId = fluidType.getId();
+                                    if (fluidId != null && !fluidId.isEmpty()) {
+                                        FluidScanInfo fluidInfo = foundFluids.computeIfAbsent(fluidId, id -> {
+                                            String displayName = formatBlockIdAsDisplayName(id);
+                                            return new FluidScanInfo(id, displayName);
+                                        });
+
+                                        fluidInfo.count++;
+                                        if (distance < fluidInfo.nearestDistance) {
+                                            fluidInfo.nearestDistance = distance;
+                                            fluidInfo.nearestX = x;
+                                            fluidInfo.nearestY = y;
+                                            fluidInfo.nearestZ = z;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         int blockIdInt = chunk.getBlock(x, y, z);
                         var blockType = blockTypeAssetMap.getAsset(blockIdInt);
-                        if (blockType == null) continue;
-                        
-                        String blockId = blockType.getId();
-                        if (blockId == null || blockId.isEmpty()) continue;
+                        if (blockType == null) {
+                            continue;
+                        }
 
-                        // Calculate distance
-                        double distance = Math.sqrt(
-                            Math.pow(x - startX, 2) + 
-                            Math.pow(y - startY, 2) + 
-                            Math.pow(z - startZ, 2)
-                        );
+                        String blockId = blockType.getId();
+                        if (blockId == null || blockId.isEmpty()) {
+                            continue;
+                        }
 
                         // Update or create block scan info
                         BlockScanInfo info = foundBlocks.computeIfAbsent(blockId, id -> {
@@ -1683,6 +1764,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                             String normalizedCategory = "misc".equals(materialType) ? "other" : materialType;
                             categoryToBlockIds.computeIfAbsent(normalizedCategory, k -> new HashSet<>()).add(blockId);
                         }
+
                     }
                 }
 
@@ -1690,13 +1772,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                 Map<String, Object> result = new HashMap<>();
                 result.put("current_position", Map.of("x", startX, "y", startY, "z", startZ));
                 result.put("radius", radius);
-                
+
                 // Build categories map
                 Map<String, Map<String, Object>> categories = new HashMap<>();
                 for (Map.Entry<String, Set<String>> entry : categoryToBlockIds.entrySet()) {
                     String category = entry.getKey();
                     Set<String> blockIds = entry.getValue();
-                    
+
                     Map<String, Object> categoryInfo = new HashMap<>();
                     categoryInfo.put("blockIds", new ArrayList<>(blockIds));
                     categoryInfo.put("count", blockIds.size());
@@ -1717,20 +1799,50 @@ public class HytaleServerAdapter implements HytaleAPI {
                     blockInfo.put("category", primaryCategory);
                     // Also normalize "misc" to "other" in the categories list
                     List<String> normalizedCategories = info.materialTypes.stream()
-                        .map(cat -> "misc".equals(cat) ? "other" : cat)
-                        .toList();
+                            .map(cat -> "misc".equals(cat) ? "other" : cat)
+                            .toList();
                     blockInfo.put("categories", normalizedCategories);
                     blockInfo.put("count", info.count);
                     blockInfo.put("nearest", Map.of(
-                        "coordinates", Map.of("x", info.nearestX, "y", info.nearestY, "z", info.nearestZ),
-                        "distance", Math.round(info.nearestDistance * 100.0) / 100.0
-                    ));
+                            "coordinates", Map.of("x", info.nearestX, "y", info.nearestY, "z", info.nearestZ),
+                            "distance", Math.round(info.nearestDistance * 100.0) / 100.0));
                     blocks.put(info.blockId, blockInfo);
                 }
                 result.put("blocks", blocks);
                 result.put("totalUniqueBlocks", foundBlocks.size());
 
-                logger.debug("Scan complete: found " + foundBlocks.size() + " unique block types in radius " + radius);
+                // Build fluids map (same shape as blocks but concise)
+                Map<String, Map<String, Object>> fluids = new HashMap<>();
+                FluidScanInfo nearestFluid = null;
+                for (FluidScanInfo info : foundFluids.values()) {
+                    Map<String, Object> fluidInfo = new HashMap<>();
+                    fluidInfo.put("displayName", info.displayName);
+                    fluidInfo.put("category", "fluid");
+                    fluidInfo.put("count", info.count);
+                    fluidInfo.put("nearest", Map.of(
+                            "coordinates", Map.of("x", info.nearestX, "y", info.nearestY, "z", info.nearestZ),
+                            "distance", Math.round(info.nearestDistance * 100.0) / 100.0));
+                    fluids.put(info.fluidId, fluidInfo);
+
+                    if (nearestFluid == null || info.nearestDistance < nearestFluid.nearestDistance) {
+                        nearestFluid = info;
+                    }
+                }
+                result.put("fluids", fluids);
+                result.put("totalUniqueFluids", foundFluids.size());
+                if (nearestFluid != null) {
+                    result.put("nearestFluid", Map.of(
+                            "fluidId", nearestFluid.fluidId,
+                            "displayName", nearestFluid.displayName,
+                            "count", nearestFluid.count,
+                            "nearest", Map.of(
+                                    "coordinates", Map.of("x", nearestFluid.nearestX, "y", nearestFluid.nearestY,
+                                            "z", nearestFluid.nearestZ),
+                                    "distance", Math.round(nearestFluid.nearestDistance * 100.0) / 100.0)));
+                }
+
+                logger.debug("Scan complete: found " + foundBlocks.size() + " unique block types and "
+                        + foundFluids.size() + " unique fluids in radius " + radius);
                 future.complete(Optional.of(result));
 
             } catch (Exception e) {
@@ -1761,6 +1873,22 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
     }
 
+    /**
+     * Helper class to track scan information for a fluid type
+     */
+    private static class FluidScanInfo {
+        final String fluidId;
+        final String displayName;
+        int count = 0;
+        double nearestDistance = Double.MAX_VALUE;
+        int nearestX, nearestY, nearestZ;
+
+        FluidScanInfo(String fluidId, String displayName) {
+            this.fluidId = fluidId;
+            this.displayName = displayName;
+        }
+    }
+
     @Override
     public CompletableFuture<Optional<Map<String, Object>>> findEntity(UUID npcInstanceId, String name,
             int radius) {
@@ -1777,7 +1905,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] findEntity: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            logger.warn("[Hycompanion] findEntity: Could not find world '" + worldName
+                    + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             future.complete(Optional.empty());
@@ -1811,15 +1940,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                 String bestName = "";
 
                 // Get NPC's UUID for comparison
-                com.hypixel.hytale.server.core.entity.UUIDComponent myUuidComp = 
-                    store.getComponent(myselfRef, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                com.hypixel.hytale.server.core.entity.UUIDComponent myUuidComp = store.getComponent(myselfRef,
+                        com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
                 UUID myUuid = myUuidComp != null ? myUuidComp.getUuid() : null;
 
                 // Iterate all entities
                 for (Map.Entry<UUID, Ref<EntityStore>> entry : allEntities.entrySet()) {
                     UUID entityUuid = entry.getKey();
                     Ref<EntityStore> ref = entry.getValue();
-                    
+
                     // Skip if invalid or is the NPC itself
                     if (!ref.isValid())
                         continue;
@@ -1909,7 +2038,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                     future.complete(Optional.empty());
                 }
 
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 logger.error("Error in findEntity: " + e.getMessage());
                 Sentry.captureException(e);
                 future.complete(Optional.empty());
@@ -1934,7 +2063,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] scanEntities: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            logger.warn("[Hycompanion] scanEntities: Could not find world '" + worldName
+                    + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             future.complete(Optional.empty());
@@ -1957,7 +2087,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                 int startX = (int) Math.floor(myPos.getX());
                 int startY = (int) Math.floor(myPos.getY());
                 int startZ = (int) Math.floor(myPos.getZ());
-                
+
                 EntityStore entityStore = store.getExternalData();
 
                 // Use reflection to access entitiesByUuid map
@@ -1970,15 +2100,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                 List<Map<String, Object>> entities = new ArrayList<>();
 
                 // Get NPC's UUID for comparison
-                com.hypixel.hytale.server.core.entity.UUIDComponent myUuidComp = 
-                    store.getComponent(myselfRef, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                com.hypixel.hytale.server.core.entity.UUIDComponent myUuidComp = store.getComponent(myselfRef,
+                        com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
                 UUID myUuid = myUuidComp != null ? myUuidComp.getUuid() : null;
 
                 // Iterate all entities
                 for (Map.Entry<UUID, Ref<EntityStore>> entry : allEntities.entrySet()) {
                     UUID entryEntityUuid = entry.getKey();
                     Ref<EntityStore> ref = entry.getValue();
-                    
+
                     // Skip if invalid or is the NPC itself
                     if (!ref.isValid())
                         continue;
@@ -1994,7 +2124,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                         continue;
 
                     // Skip projectiles (holograms, thinking indicators, etc.)
-                    ProjectileComponent projectileComp = store.getComponent(ref, ProjectileComponent.getComponentType());
+                    ProjectileComponent projectileComp = store.getComponent(ref,
+                            ProjectileComponent.getComponentType());
                     if (projectileComp != null)
                         continue;
 
@@ -2005,7 +2136,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                     UUID entityUuid = null;
                     Double health = null;
                     Double maxHealth = null;
-                    
+
                     // Check for player
                     com.hypixel.hytale.server.core.universe.PlayerRef pRef = store.getComponent(ref,
                             com.hypixel.hytale.server.core.universe.PlayerRef.getComponentType());
@@ -2020,7 +2151,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                         if (npcComp != null) {
                             entityType = "npc";
                             entityUuid = npcComp.getUuid();
-                            
+
                             Nameplate np = store.getComponent(ref, Nameplate.getComponentType());
                             if (np != null && np.getText() != null && !np.getText().isEmpty()) {
                                 entityName = np.getText();
@@ -2030,7 +2161,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                             } else {
                                 entityName = "NPC";
                             }
-                            
+
                             appearance = npcComp.getRole() != null && npcComp.getRoleName() != null
                                     ? npcComp.getRoleName()
                                     : "NPC";
@@ -2044,9 +2175,9 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 entityType = "item";
                                 entityName = ic.getItemStack().getItem().getId();
                                 appearance = "Dropped Item: " + entityName;
-                                
-                                com.hypixel.hytale.server.core.entity.UUIDComponent uuidComp = 
-                                    store.getComponent(ref, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+
+                                com.hypixel.hytale.server.core.entity.UUIDComponent uuidComp = store.getComponent(ref,
+                                        com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
                                 if (uuidComp != null) {
                                     entityUuid = uuidComp.getUuid();
                                 }
@@ -2063,12 +2194,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                     // Get health stats for players and NPCs
                     if ("player".equals(entityType) || "npc".equals(entityType)) {
                         try {
-                            com.hypixel.hytale.server.core.modules.entitystats.EntityStatMap statMap = 
-                                store.getComponent(ref, com.hypixel.hytale.server.core.modules.entitystats.EntityStatMap.getComponentType());
+                            com.hypixel.hytale.server.core.modules.entitystats.EntityStatMap statMap = store
+                                    .getComponent(ref, com.hypixel.hytale.server.core.modules.entitystats.EntityStatMap
+                                            .getComponentType());
                             if (statMap != null) {
-                                int healthIndex = com.hypixel.hytale.server.core.modules.entitystats.asset.DefaultEntityStatTypes.getHealth();
+                                int healthIndex = com.hypixel.hytale.server.core.modules.entitystats.asset.DefaultEntityStatTypes
+                                        .getHealth();
                                 if (healthIndex != Integer.MIN_VALUE) {
-                                    com.hypixel.hytale.server.core.modules.entitystats.EntityStatValue healthValue = statMap.get(healthIndex);
+                                    com.hypixel.hytale.server.core.modules.entitystats.EntityStatValue healthValue = statMap
+                                            .get(healthIndex);
                                     if (healthValue != null) {
                                         health = (double) healthValue.get();
                                         maxHealth = (double) healthValue.getMax();
@@ -2090,11 +2224,11 @@ public class HytaleServerAdapter implements HytaleAPI {
                     if (entityUuid != null) {
                         entityInfo.put("uuid", entityUuid.toString());
                     }
-                    
+
                     Vector3d pos = t.getPosition();
                     entityInfo.put("coordinates", Map.of("x", pos.getX(), "y", pos.getY(), "z", pos.getZ()));
                     entityInfo.put("distance", Math.round(dist * 100.0) / 100.0);
-                    
+
                     if (health != null) {
                         entityInfo.put("health", health);
                     }
@@ -2115,7 +2249,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                 logger.debug("Scan entities complete: found " + entities.size() + " entities in radius " + radius);
                 future.complete(Optional.of(result));
 
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 logger.error("Error in scanEntities: " + e.getMessage());
                 Sentry.captureException(e);
                 future.complete(Optional.empty());
@@ -2140,6 +2274,10 @@ public class HytaleServerAdapter implements HytaleAPI {
                 logger.debug("Circuit breaker tripped: Too many consecutive timeouts accessing World.");
                 consecutiveTimeouts.incrementAndGet();
             }
+            Location fallback = lastKnownNpcLocations.get(npcInstanceId);
+            if (fallback != null) {
+                return Optional.of(fallback);
+            }
             return Optional.empty();
         }
 
@@ -2148,6 +2286,10 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         if (npcInstanceData == null) {
             return Optional.empty();
+        }
+        Location spawnFallback = npcInstanceData.spawnLocation();
+        if (spawnFallback != null) {
+            lastKnownNpcLocations.putIfAbsent(npcInstanceId, spawnFallback);
         }
 
         Ref<EntityStore> entityRef = npcInstanceData.entityRef();
@@ -2163,12 +2305,15 @@ public class HytaleServerAdapter implements HytaleAPI {
         try {
             Store<EntityStore> store = entityRef.getStore();
             entityWorld = store.getExternalData().getWorld();
-            // logger.debug("[getNpcInstanceLocation] NPC " + npcInstanceId + " store world: " + 
-            //     (entityWorld != null ? entityWorld.getName() : "null") + 
-            //     ", spawnLocation world: " + 
-            //     (npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : "null"));
+            // logger.debug("[getNpcInstanceLocation] NPC " + npcInstanceId + " store world:
+            // " +
+            // (entityWorld != null ? entityWorld.getName() : "null") +
+            // ", spawnLocation world: " +
+            // (npcInstanceData.spawnLocation() != null ?
+            // npcInstanceData.spawnLocation().world() : "null"));
         } catch (Exception e) {
-            logger.debug("[getNpcInstanceLocation] Could not get NPC world from store for " + npcInstanceId + ": " + e.getMessage());
+            logger.debug("[getNpcInstanceLocation] Could not get NPC world from store for " + npcInstanceId + ": "
+                    + e.getMessage());
             return Optional.empty();
         }
 
@@ -2180,7 +2325,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Check if the world has players - if not, the world may not be ticking
         // and tasks won't be processed. In this case, we can't get the location.
         if (entityWorld.getPlayerCount() == 0) {
-            logger.debug("[getNpcInstanceLocation] World " + entityWorld.getName() + " has no players, skipping location check for NPC " + npcInstanceId);
+            logger.debug("[getNpcInstanceLocation] World " + entityWorld.getName()
+                    + " has no players, skipping location check for NPC " + npcInstanceId);
             return Optional.empty();
         }
 
@@ -2201,11 +2347,12 @@ public class HytaleServerAdapter implements HytaleAPI {
                         logger.debug("[getNpcInstanceLocation] TransformComponent is null for NPC " + npcInstanceId);
                     }
                 } catch (Exception e) {
-                    logger.debug("[getNpcInstanceLocation] Could not get NPC transform for " + npcInstanceId + ": " + e.getMessage());
+                    logger.debug("[getNpcInstanceLocation] Could not get NPC transform for " + npcInstanceId + ": "
+                            + e.getMessage());
                 }
             } else {
-                logger.debug("[getNpcInstanceLocation] Entity ref is null or invalid for NPC " + npcInstanceId + 
-                    ", entityRef=" + entityRef + ", valid=" + (entityRef != null ? entityRef.isValid() : "N/A"));
+                logger.debug("[getNpcInstanceLocation] Entity ref is null or invalid for NPC " + npcInstanceId +
+                        ", entityRef=" + entityRef + ", valid=" + (entityRef != null ? entityRef.isValid() : "N/A"));
             }
             return Optional.empty();
         };
@@ -2213,12 +2360,13 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Check if we are already on the correct WorldThread for this NPC
         String currentThreadName = Thread.currentThread().getName();
         String expectedWorldName = entityWorld.getName();
-        if (currentThreadName.contains("WorldThread") && expectedWorldName != null && 
-            currentThreadName.contains(expectedWorldName)) {
+        if (currentThreadName.contains("WorldThread") && expectedWorldName != null &&
+                currentThreadName.contains(expectedWorldName)) {
             // We're already on the correct world thread, can execute directly
             Optional<Location> result = locationExtractor.get();
             if (result.isPresent()) {
                 consecutiveTimeouts.set(0);
+                lastKnownNpcLocations.put(npcInstanceId, result.get());
             }
             return result;
         }
@@ -2231,28 +2379,33 @@ public class HytaleServerAdapter implements HytaleAPI {
                     try {
                         Optional<Location> loc = locationExtractor.get();
                         if (loc.isEmpty()) {
-                            logger.debug("[getNpcInstanceLocation] Location extractor returned empty for NPC " + npcInstanceId + " on world " + entityWorld.getName());
+                            logger.debug("[getNpcInstanceLocation] Location extractor returned empty for NPC "
+                                    + npcInstanceId + " on world " + entityWorld.getName());
                         }
                         future.complete(loc);
                     } catch (Exception e) {
-                        logger.debug("[getNpcInstanceLocation] Exception in location extractor for NPC " + npcInstanceId + ": " + e.getMessage());
+                        logger.debug("[getNpcInstanceLocation] Exception in location extractor for NPC " + npcInstanceId
+                                + ": " + e.getMessage());
                         future.completeExceptionally(e);
                     }
                 });
             } catch (java.util.concurrent.RejectedExecutionException e) {
                 // World executor is shut down or full
-                logger.debug("[getNpcInstanceLocation] World executor rejected location check task for NPC " + npcInstanceId);
+                logger.debug("[getNpcInstanceLocation] World executor rejected location check task for NPC "
+                        + npcInstanceId);
                 return Optional.empty();
             }
 
-            // Wait up to 100ms for the result (was 25ms - too short for busy World threads)
-            Optional<Location> result = future.get(100, TimeUnit.MILLISECONDS);
+            // Wait up to 250ms for the result to tolerate brief world-thread load spikes.
+            Optional<Location> result = future.get(250, TimeUnit.MILLISECONDS);
             if (result.isEmpty()) {
-                logger.debug("[getNpcInstanceLocation] No result for NPC " + npcInstanceId + " after executing on " + entityWorld.getName());
+                logger.debug("[getNpcInstanceLocation] No result for NPC " + npcInstanceId + " after executing on "
+                        + entityWorld.getName());
             }
             if (result.isPresent()) {
                 // Reset circuit breaker on success
                 consecutiveTimeouts.set(0);
+                lastKnownNpcLocations.put(npcInstanceId, result.get());
             }
             return result;
         } catch (InterruptedException e) {
@@ -2264,15 +2417,21 @@ public class HytaleServerAdapter implements HytaleAPI {
             // Handle timeout specifically for circuit breaker
             int timeouts = consecutiveTimeouts.incrementAndGet();
             if (timeouts <= 10) { // Reduce log spam
-                logger.debug("[getNpcInstanceLocation] Timeout getting NPC " + npcInstanceId + " location (" + timeouts + ")");
+                logger.debug("[getNpcInstanceLocation] Timeout getting NPC " + npcInstanceId + " location (" + timeouts
+                        + ")");
             }
             Sentry.captureException(e);
         } catch (Exception e) {
             // Other error
-            logger.debug("[getNpcInstanceLocation] Could not get real-time location for NPC " + npcInstanceId + ": " + e.getMessage());
+            logger.debug("[getNpcInstanceLocation] Could not get real-time location for NPC " + npcInstanceId + ": "
+                    + e.getMessage());
             Sentry.captureException(e);
         }
 
+        Location fallback = lastKnownNpcLocations.get(npcInstanceId);
+        if (fallback != null) {
+            return Optional.of(fallback);
+        }
         return Optional.empty();
     }
 
@@ -2304,167 +2463,171 @@ public class HytaleServerAdapter implements HytaleAPI {
             return;
         }
 
-        // Cancel any existing rotation task
-        ScheduledFuture<?> existing = rotationTasks.remove(npcInstanceId);
-        if (existing != null) {
-            existing.cancel(false);
-        }
-
         // Get the correct world for this NPC, not the default world
         String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
         World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
         if (resolvedWorld == null) {
             resolvedWorld = Universe.get().getDefaultWorld();
-            logger.warn("[Hycompanion] rotateNpcInstanceToward: Could not find world '" + worldName + "' for NPC, falling back to default world");
+            logger.warn("[Hycompanion] rotateNpcInstanceToward: Could not find world '" + worldName
+                    + "' for NPC, falling back to default world");
         }
         if (resolvedWorld == null) {
             return;
         }
         final World world = resolvedWorld;
 
-        // Calculate target yaw once at start
-        final float[] targetYaw = new float[1];
-
         try {
-            CompletableFuture<Boolean> calcFuture = new CompletableFuture<>();
-            world.execute(() -> {
-                try {
-                    if (!entityRef.isValid()) {
-                        calcFuture.complete(false);
+            // Schedule smooth body rotation
+            AtomicInteger ticksRemaining = new AtomicInteger(20); // 1 second total
+            AtomicReference<ScheduledFuture<?>> selfRef = new AtomicReference<>();
+
+            Runnable taskRunnable = new Runnable() {
+                @Override
+                public void run() {
+                    ScheduledFuture<?> self = selfRef.get();
+                    if (isShuttingDown() || Thread.currentThread().isInterrupted()) {
+                        cancelSpecificRotationTask(npcInstanceId, self);
                         return;
                     }
 
-                    Store<EntityStore> store = entityRef.getStore();
-                    TransformComponent transform = store.getComponent(entityRef, TransformComponent.getComponentType());
-                    if (transform == null) {
-                        calcFuture.complete(false);
+                    if (ticksRemaining.decrementAndGet() < 0) {
+                        cancelSpecificRotationTask(npcInstanceId, self);
                         return;
                     }
 
-                    Vector3d npcPos = transform.getPosition();
-                    double dx = targetLocation.x() - npcPos.getX();
-                    double dz = targetLocation.z() - npcPos.getZ();
-
-                    if ((dx * dx) + (dz * dz) < 0.0001d) {
-                        calcFuture.complete(false);
-                        return;
-                    }
-
-                    targetYaw[0] = TrigMathUtil.atan2(-dx, -dz);
-                    calcFuture.complete(true);
-                } catch (Exception e) {
-                    Sentry.captureException(e);
-                    calcFuture.complete(false);
-                }
-            });
-
-            if (!calcFuture.get(100, TimeUnit.MILLISECONDS)) {
-                return;
-            }
-        } catch (Exception e) {
-            logger.debug("[Hycompanion] Failed to calculate target rotation: " + e.getMessage());
-            Sentry.captureException(e);
-            return;
-        }
-
-        // Schedule smooth body rotation
-        AtomicInteger ticksRemaining = new AtomicInteger(15);
-
-        ScheduledFuture<?> rotationTask = rotationScheduler.scheduleAtFixedRate(() -> {
-            if (isShuttingDown() || Thread.currentThread().isInterrupted()) {
-                rotationTasks.remove(npcInstanceId);
-                return;
-            }
-
-            if (ticksRemaining.decrementAndGet() < 0) {
-                rotationTasks.remove(npcInstanceId);
-                return;
-            }
-
-            try {
-                world.execute(() -> {
                     try {
-                        if (!entityRef.isValid()) {
-                            rotationTasks.remove(npcInstanceId);
-                            return;
-                        }
-
-                        Store<EntityStore> store = entityRef.getStore();
-                        NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
-                        if (npcEntity == null) {
-                            rotationTasks.remove(npcInstanceId);
-                            return;
-                        }
-
-                        // Check busy states
-                        var role = npcEntity.getRole();
-                        if (role != null) {
-                            var stateSupport = role.getStateSupport();
-                            if (stateSupport != null && stateSupport.isInBusyState()) {
-                                rotationTasks.remove(npcInstanceId);
-                                return;
-                            }
-
-                            var markedSupport = role.getMarkedEntitySupport();
-                            if (markedSupport != null) {
-                                var lockedTarget = markedSupport.getMarkedEntityRef("LockedTarget");
-                                if (lockedTarget != null && lockedTarget.isValid()) {
-                                    rotationTasks.remove(npcInstanceId);
+                        world.execute(() -> {
+                            try {
+                                if (!entityRef.isValid()) {
+                                    cancelSpecificRotationTask(npcInstanceId, self);
                                     return;
                                 }
+
+                                Store<EntityStore> store = entityRef.getStore();
+                                TransformComponent transform = store.getComponent(entityRef,
+                                        TransformComponent.getComponentType());
+                                NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
+
+                                if (transform == null || npcEntity == null) {
+                                    cancelSpecificRotationTask(npcInstanceId, self);
+                                    return;
+                                }
+
+                                // Check busy states to prevent AI conflict
+                                var role = npcEntity.getRole();
+                                if (role != null) {
+                                    var stateSupport = role.getStateSupport();
+                                    if (stateSupport != null && stateSupport.isInBusyState()) {
+                                        cancelSpecificRotationTask(npcInstanceId, self);
+                                        return;
+                                    }
+
+                                    var markedSupport = role.getMarkedEntitySupport();
+                                    if (markedSupport != null) {
+                                        var lockedTarget = markedSupport.getMarkedEntityRef("LockedTarget");
+                                        if (lockedTarget != null && lockedTarget.isValid()) {
+                                            cancelSpecificRotationTask(npcInstanceId, self);
+                                            return;
+                                        }
+                                    }
+                                }
+
+                                Vector3d npcPos = transform.getPosition();
+                                double dx = targetLocation.x() - npcPos.getX();
+                                double dz = targetLocation.z() - npcPos.getZ();
+
+                                if ((dx * dx) + (dz * dz) < 0.0001d) {
+                                    cancelSpecificRotationTask(npcInstanceId, self);
+                                    return;
+                                }
+
+                                float targetYaw = TrigMathUtil.atan2(-dx, -dz);
+
+                                Vector3f bodyRotation = transform.getRotation();
+                                float currentYaw = bodyRotation.getYaw();
+
+                                // Calculate shortest angle difference
+                                float diff = targetYaw - currentYaw;
+                                while (diff > (float) Math.PI)
+                                    diff -= 2 * (float) Math.PI;
+                                while (diff < -(float) Math.PI)
+                                    diff += 2 * (float) Math.PI;
+
+                                // Stop if aligned (within ~2.8 degrees / 0.05 radians)
+                                if (Math.abs(diff) < 0.05f) {
+                                    bodyRotation.setYaw(targetYaw);
+                                    bodyRotation.setPitch(0.0f);
+                                    bodyRotation.setRoll(0.0f);
+                                    transform.setRotation(bodyRotation);
+                                    npcEntity.setLeashHeading(targetYaw);
+                                    npcEntity.setLeashPitch(0.0f);
+                                    cancelSpecificRotationTask(npcInstanceId, self);
+                                    return;
+                                }
+
+                                // Max turn per tick: 90 deg/sec = 1.57 rad/sec -> 0.0785 rad/tick
+                                float maxTurn = 0.0785f;
+                                float turn = Math.min(Math.abs(diff), maxTurn) * Math.signum(diff);
+                                float newYaw = currentYaw + turn;
+
+                                // Normalize
+                                while (newYaw > (float) Math.PI)
+                                    newYaw -= 2 * (float) Math.PI;
+                                while (newYaw < -(float) Math.PI)
+                                    newYaw += 2 * (float) Math.PI;
+
+                                bodyRotation.setYaw(newYaw);
+                                bodyRotation.setPitch(0.0f);
+                                bodyRotation.setRoll(0.0f);
+                                transform.setRotation(bodyRotation);
+
+                                // Update leash heading so AI knows where we're facing
+                                npcEntity.setLeashHeading(newYaw);
+                                npcEntity.setLeashPitch(0.0f);
+
+                            } catch (Exception e) {
+                                logger.debug("[Hycompanion] Rotation tick error: " + e.getMessage());
+                                Sentry.captureException(e);
+                                cancelSpecificRotationTask(npcInstanceId, self);
                             }
-                        }
-
-                        TransformComponent transform = store.getComponent(entityRef,
-                                TransformComponent.getComponentType());
-                        if (transform == null) {
-                            rotationTasks.remove(npcInstanceId);
-                            return;
-                        }
-
-                        // Get current body rotation
-                        Vector3f bodyRotation = transform.getRotation();
-                        float currentYaw = bodyRotation.getYaw();
-
-                        // Calculate shortest angle difference
-                        float diff = targetYaw[0] - currentYaw;
-                        while (diff > Math.PI)
-                            diff -= 2 * Math.PI;
-                        while (diff < -Math.PI)
-                            diff += 2 * Math.PI;
-
-                        // Lerp toward target (15% per tick for smoother motion)
-                        float newYaw = currentYaw + diff * 0.15f;
-
-                        bodyRotation.setYaw(newYaw);
-                        bodyRotation.setPitch(0.0f);
-                        bodyRotation.setRoll(0.0f);
-                        transform.setRotation(bodyRotation);
-
-                        // Update leash heading so AI knows where we're facing
-                        npcEntity.setLeashHeading(newYaw);
-                        npcEntity.setLeashPitch(0.0f);
-
-                        // Stop if aligned (within ~9 degrees)
-                        if (Math.abs(diff) < 0.20f) {
-                            rotationTasks.remove(npcInstanceId);
-                        }
-                    } catch (Exception e) {
-                        logger.debug("[Hycompanion] Rotation tick error: " + e.getMessage());
+                        });
+                    } catch (java.util.concurrent.RejectedExecutionException e) {
                         Sentry.captureException(e);
-                        rotationTasks.remove(npcInstanceId);
+                        cancelSpecificRotationTask(npcInstanceId, self);
+                    } catch (Exception e) {
+                        Sentry.captureException(e);
+                        cancelSpecificRotationTask(npcInstanceId, self);
                     }
-                });
-            } catch (java.util.concurrent.RejectedExecutionException e) {
-                Sentry.captureException(e);
-                rotationTasks.remove(npcInstanceId);
-            } catch (Exception e) {
-                Sentry.captureException(e);
-                rotationTasks.remove(npcInstanceId);
-            }
-        }, 0, 50, TimeUnit.MILLISECONDS);
+                }
+            };
 
-        rotationTasks.put(npcInstanceId, rotationTask);
+            ScheduledFuture<?> rotationTask = rotationScheduler.scheduleAtFixedRate(taskRunnable, 0, 50,
+                    TimeUnit.MILLISECONDS);
+            selfRef.set(rotationTask);
+
+            // Put gracefully, cancelling any previous task
+            ScheduledFuture<?> previousTask = rotationTasks.put(npcInstanceId, rotationTask);
+            if (previousTask != null && !previousTask.isCancelled()) {
+                previousTask.cancel(false);
+            }
+        } catch (Exception e) {
+            logger.debug("[Hycompanion] Failed to execute target rotation: " + e.getMessage());
+            Sentry.captureException(e);
+        }
+    }
+
+    private void cancelRotationTask(UUID npcInstanceId) {
+        ScheduledFuture<?> existing = rotationTasks.remove(npcInstanceId);
+        if (existing != null) {
+            existing.cancel(false);
+        }
+    }
+
+    private void cancelSpecificRotationTask(UUID npcInstanceId, ScheduledFuture<?> task) {
+        if (task != null) {
+            task.cancel(false);
+            rotationTasks.remove(npcInstanceId, task);
+        }
     }
 
     @Override
@@ -2496,11 +2659,12 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         // Verify NPC component still exists
         // We need to check on the correct world thread to avoid thread assertion errors
-        String expectedWorldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
+        String expectedWorldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world()
+                : null;
         String currentThreadName = Thread.currentThread().getName();
-        boolean onCorrectWorldThread = currentThreadName.contains("WorldThread") && expectedWorldName != null && 
-            currentThreadName.contains(expectedWorldName);
-        
+        boolean onCorrectWorldThread = currentThreadName.contains("WorldThread") && expectedWorldName != null &&
+                currentThreadName.contains(expectedWorldName);
+
         if (onCorrectWorldThread) {
             // Already on correct world thread, can check directly
             try {
@@ -2511,7 +2675,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                 }
                 NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
                 if (npcEntity == null) {
-                    logger.info("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": NPC component not found on entity");
+                    logger.info(
+                            "[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": NPC component not found on entity");
                     return false;
                 }
                 return true;
@@ -2523,8 +2688,10 @@ public class HytaleServerAdapter implements HytaleAPI {
             }
         } else {
             // Not on correct world thread, just assume valid if entityRef is valid
-            // The actual validation will happen when the NPC is accessed on the correct thread
-            logger.debug("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": Not on correct world thread (" + expectedWorldName + "), skipping component check");
+            // The actual validation will happen when the NPC is accessed on the correct
+            // thread
+            logger.debug("[isNpcInstanceEntityValid] NPC " + npcInstanceId + ": Not on correct world thread ("
+                    + expectedWorldName + "), skipping component check");
             return true;
         }
     }
@@ -2584,18 +2751,22 @@ public class HytaleServerAdapter implements HytaleAPI {
                                                 Location spawnLocation = npcSpawnLocations.get(externalId);
                                                 if (spawnLocation == null) {
                                                     // Only use leash point if it's valid (not at origin)
-                                                    if (leashPoint.getX() == 0 && leashPoint.getY() == 0 
+                                                    if (leashPoint.getX() == 0 && leashPoint.getY() == 0
                                                             && leashPoint.getZ() == 0) {
                                                         // Use current position as fallback
-                                                        TransformComponent currentTransform = store.getComponent(entityRef,
+                                                        TransformComponent currentTransform = store.getComponent(
+                                                                entityRef,
                                                                 TransformComponent.getComponentType());
                                                         if (currentTransform != null) {
                                                             Vector3d pos = currentTransform.getPosition();
-                                                            spawnLocation = Location.of(pos.getX(), pos.getY(), pos.getZ(),
-                                                                    world.getName() != null ? world.getName() : "world");
+                                                            spawnLocation = Location.of(pos.getX(), pos.getY(),
+                                                                    pos.getZ(),
+                                                                    world.getName() != null ? world.getName()
+                                                                            : "world");
                                                         } else {
                                                             spawnLocation = Location.of(0, 0, 0,
-                                                                    world.getName() != null ? world.getName() : "world");
+                                                                    world.getName() != null ? world.getName()
+                                                                            : "world");
                                                         }
                                                     } else {
                                                         spawnLocation = Location.of(
@@ -2611,7 +2782,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                                                         npc, npcData, spawnLocation);
 
                                                 // Apply capabilities (invulnerability, knockback) to existing NPCs
-                                                // This is critical for server restart - existing NPCs need their capabilities restored
+                                                // This is critical for server restart - existing NPCs need their
+                                                // capabilities restored
                                                 applyNpcCapabilities(store, entityRef, npc, npcData, "Discovery");
 
                                                 // Get Location
@@ -2755,7 +2927,8 @@ public class HytaleServerAdapter implements HytaleAPI {
     @Override
     public String getTimeOfDay() {
         // NOTE: This method returns the time of day for the default world.
-        // For multi-world support, the API would need to be extended to accept a world parameter.
+        // For multi-world support, the API would need to be extended to accept a world
+        // parameter.
         // Different worlds may have different times (e.g., Lobby vs Arcana).
         World world = Universe.get().getDefaultWorld();
         if (world != null) {
@@ -2793,7 +2966,8 @@ public class HytaleServerAdapter implements HytaleAPI {
     @Override
     public String getWeather() {
         // NOTE: This method returns the weather for the default world.
-        // For multi-world support, the API would need to be extended to accept a world parameter.
+        // For multi-world support, the API would need to be extended to accept a world
+        // parameter.
         // Different worlds may have different weather (e.g., Lobby vs Arcana).
         World world = Universe.get().getDefaultWorld();
         if (world != null) {
@@ -2975,6 +3149,10 @@ public class HytaleServerAdapter implements HytaleAPI {
     public boolean startFollowingPlayer(UUID npcInstanceId, String targetPlayerName) {
         logger.info("[Hycompanion] NPC [" + npcInstanceId + "] starting to follow player: " + targetPlayerName);
 
+        // If a move_to monitor is still active, it can later reset LockedTarget/Idle
+        // and break follow.
+        cleanupMovement(npcInstanceId);
+
         // Debug: Log all tracked NPCs
         logger.debug("[Hycompanion] startFollowingPlayer - Tracked NPCs: " + npcInstanceEntities.keySet());
 
@@ -3010,18 +3188,39 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            
+
             // Get the correct world for this NPC, not the default world
             String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
             World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
             if (resolvedWorld == null) {
                 resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] startFollowingPlayer: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                logger.warn("[Hycompanion] startFollowingPlayer: Could not find world '" + worldName
+                        + "' for NPC, falling back to default world");
             }
 
             if (resolvedWorld != null) {
                 final World world = resolvedWorld;
-                world.execute(() -> {
+
+                // LockedTarget follow only works when NPC and target are in the same world.
+                UUID playerWorldUuid = targetPlayer.getWorldUuid();
+                if (playerWorldUuid == null) {
+                    logger.warn(
+                            "[Hycompanion] Cannot follow - target player world is unavailable: " + targetPlayerName);
+                    return false;
+                }
+                World targetPlayerWorld = Universe.get().getWorld(playerWorldUuid);
+                if (targetPlayerWorld == null) {
+                    logger.warn("[Hycompanion] Cannot follow - target player world not found for UUID: "
+                            + playerWorldUuid);
+                    return false;
+                }
+                if (!world.getName().equalsIgnoreCase(targetPlayerWorld.getName())) {
+                    logger.warn("[Hycompanion] Cannot follow - NPC and player are in different worlds (npc="
+                            + world.getName() + ", player=" + targetPlayerWorld.getName() + ")");
+                    return false;
+                }
+
+                boolean scheduled = safeWorldExecute(world, () -> {
                     try {
                         NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
                         if (npcEntity != null) {
@@ -3030,22 +3229,19 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 // Get the player's entity reference
                                 Ref<EntityStore> playerEntityRef = targetPlayer.getReference();
                                 if (playerEntityRef != null && playerEntityRef.isValid()) {
-                                    // Cancel any playing Action animation (Sit, Sleep, etc.) by playing Idle
-                                    // We use playAnimation with "Idle" instead of stopAnimation because some
-                                    // looping animations need to be explicitly replaced
-                                    try {
-                                        // First try to stop the action slot
-                                        AnimationUtils.stopAnimation(entityRef, AnimationSlot.Action, true, store);
-                                        // Then play Idle to ensure visual reset
-                                        npcEntity.playAnimation(entityRef, AnimationSlot.Action, "Idle", store);
-                                        logger.info("[Hycompanion] Reset animation to Idle before following");
-                                    } catch (Exception e) {
-                                        logger.debug("[Hycompanion] Could not reset animation: " + e.getMessage());
-                                    }
+                                    // Clear any explicit action-layer animation and reset posture so locomotion can
+                                    // drive walk/run.
+                                    npcInstanceData.resetAnimationsAndPosture(store, "startFollowingPlayer");
+                                    logger.debug("[Hycompanion] Reset animations and posture before following");
 
                                     // Also reset state machine to Idle
                                     try {
-                                        role.getStateSupport().setState(entityRef, "Idle", "Default", store);
+                                        role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                        String stateAfterIdle = role.getStateSupport().getStateName();
+                                        if (!stateAfterIdle.startsWith("Idle.")) {
+                                            // Some roles do not expose an Idle state; force canonical fallback state.
+                                            role.getStateSupport().setState(entityRef, "start", null, store);
+                                        }
                                     } catch (Exception e) {
                                         logger.debug("[Hycompanion] Could not reset state to Idle: " + e.getMessage());
                                         Sentry.captureException(e);
@@ -3100,6 +3296,10 @@ public class HytaleServerAdapter implements HytaleAPI {
                         Sentry.captureException(e);
                     }
                 });
+                if (!scheduled) {
+                    logger.warn("[Hycompanion] Cannot follow - world execution rejected (shutdown in progress)");
+                    return false;
+                }
                 return true;
             }
         } catch (Exception e) {
@@ -3134,13 +3334,14 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            
+
             // Get the correct world for this NPC, not the default world
             String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
             World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
             if (resolvedWorld == null) {
                 resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] stopFollowing: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                logger.warn("[Hycompanion] stopFollowing: Could not find world '" + worldName
+                        + "' for NPC, falling back to default world");
             }
 
             if (resolvedWorld != null) {
@@ -3160,7 +3361,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                                 // Return to Idle state
                                 try {
-                                    role.getStateSupport().setState(entityRef, "Idle", "Default", store);
+                                    role.getStateSupport().setState(entityRef, "Idle", null, store);
                                     busyNpcs.remove(npcInstanceId);
                                     logger.info("[Hycompanion] NPC returned to Idle state");
 
@@ -3254,7 +3455,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                 // Compare by UUID since Ref doesn't have equals()
                 UUID targetUuid = null;
                 if (currentTarget != null && currentTarget.isValid()) {
-                    var uuidComp = store.getComponent(currentTarget, com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
+                    var uuidComp = store.getComponent(currentTarget,
+                            com.hypixel.hytale.server.core.entity.UUIDComponent.getComponentType());
                     if (uuidComp != null) {
                         targetUuid = uuidComp.getUuid();
                     }
@@ -3270,7 +3472,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                     World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
                     if (resolvedWorld == null) {
                         resolvedWorld = Universe.get().getDefaultWorld();
-                        logger.warn("[Hycompanion] clearFollowTargetsForPlayer: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                        logger.warn("[Hycompanion] clearFollowTargetsForPlayer: Could not find world '" + worldName
+                                + "' for NPC, falling back to default world");
                     }
                     if (resolvedWorld != null) {
                         final World world = resolvedWorld;
@@ -3287,7 +3490,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 // Return to Idle state
                                 var stateSupport = role.getStateSupport();
                                 if (stateSupport != null) {
-                                    stateSupport.setState(entityRef, "Idle", "Default", store);
+                                    stateSupport.setState(entityRef, "Idle", null, store);
                                 }
 
                                 busyNpcs.remove(npcInstanceId);
@@ -3510,13 +3713,14 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            
+
             // Get the correct world for this NPC, not the default world
             String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
             World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
             if (resolvedWorld == null) {
                 resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] startAttacking: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                logger.warn("[Hycompanion] startAttacking: Could not find world '" + worldName
+                        + "' for NPC, falling back to default world");
             }
 
             if (resolvedWorld != null) {
@@ -3567,15 +3771,10 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                             var role = npcEntity.getRole();
                             if (role != null) {
-                                // Cancel any playing Action animation (Sit, Sleep, etc.) by playing Idle
-                                // We use playAnimation with "Idle" instead of just stopAnimation because some
-                                // looping animations need to be explicitly replaced
+                                // Clear action-layer animation before entering combat behavior.
                                 try {
-                                    // First try to stop the action slot
                                     AnimationUtils.stopAnimation(entityRef, AnimationSlot.Action, true, store);
-                                    // Then play Idle to ensure visual reset
-                                    npcEntity.playAnimation(entityRef, AnimationSlot.Action, "Idle", store);
-                                    logger.info("[Hycompanion] Reset animation to Idle before attacking");
+                                    logger.debug("[Hycompanion] Cleared action animation before attacking");
                                 } catch (Exception e) {
                                     logger.debug("[Hycompanion] Could not reset animation: " + e.getMessage());
                                     Sentry.captureException(e);
@@ -3583,7 +3782,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                                 // Also reset state machine to Idle
                                 try {
-                                    role.getStateSupport().setState(entityRef, "Idle", "Default", store);
+                                    role.getStateSupport().setState(entityRef, "Idle", null, store);
                                 } catch (Exception e) {
                                     logger.debug("[Hycompanion] Could not reset state to Idle: " + e.getMessage());
                                     Sentry.captureException(e);
@@ -3686,13 +3885,14 @@ public class HytaleServerAdapter implements HytaleAPI {
 
         try {
             Store<EntityStore> store = entityRef.getStore();
-            
+
             // Get the correct world for this NPC, not the default world
             String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
             World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
             if (resolvedWorld == null) {
                 resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] stopAttacking: Could not find world '" + worldName + "' for NPC, falling back to default world");
+                logger.warn("[Hycompanion] stopAttacking: Could not find world '" + worldName
+                        + "' for NPC, falling back to default world");
             }
 
             if (resolvedWorld != null) {
@@ -3714,7 +3914,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                                 // Return to Idle state
                                 try {
-                                    role.getStateSupport().setState(entityRef, "Idle", "Default", store);
+                                    role.getStateSupport().setState(entityRef, "Idle", null, store);
                                     busyNpcs.remove(npcInstanceId);
                                     logger.info("[Hycompanion] NPC returned to Idle state");
                                 } catch (Exception e) {
@@ -3851,7 +4051,8 @@ public class HytaleServerAdapter implements HytaleAPI {
             // Get the player's store
             Store<EntityStore> playerStore = entityRef.getStore();
 
-            // Capture rotation values on the player's current world thread using CompletableFuture
+            // Capture rotation values on the player's current world thread using
+            // CompletableFuture
             // This ensures we read the components on the correct thread
             Vector3f[] bodyRotationHolder = new Vector3f[1];
             Vector3f[] headRotationHolder = new Vector3f[1];
@@ -3859,7 +4060,8 @@ public class HytaleServerAdapter implements HytaleAPI {
             CompletableFuture<Void> rotationCaptureFuture = CompletableFuture.runAsync(() -> {
                 try {
                     // Get current transform to preserve rotation
-                    TransformComponent transform = playerStore.getComponent(entityRef, TransformComponent.getComponentType());
+                    TransformComponent transform = playerStore.getComponent(entityRef,
+                            TransformComponent.getComponentType());
                     HeadRotation headRotation = playerStore.getComponent(entityRef, HeadRotation.getComponentType());
 
                     bodyRotationHolder[0] = (transform != null) ? transform.getRotation() : new Vector3f(0, 0, 0);
@@ -3875,13 +4077,16 @@ public class HytaleServerAdapter implements HytaleAPI {
             // Wait for the rotation capture to complete
             rotationCaptureFuture.join();
 
-            Vector3f currentBodyRotation = bodyRotationHolder[0] != null ? bodyRotationHolder[0] : new Vector3f(0, 0, 0);
-            Vector3f currentHeadRotation = headRotationHolder[0] != null ? headRotationHolder[0] : new Vector3f(0, 0, 0);
+            Vector3f currentBodyRotation = bodyRotationHolder[0] != null ? bodyRotationHolder[0]
+                    : new Vector3f(0, 0, 0);
+            Vector3f currentHeadRotation = headRotationHolder[0] != null ? headRotationHolder[0]
+                    : new Vector3f(0, 0, 0);
 
             // Create teleport destination
             Vector3d newPos = new Vector3d(location.x(), location.y(), location.z());
 
-            // Create Teleport component with target world - this is how Hytale handles teleportation
+            // Create Teleport component with target world - this is how Hytale handles
+            // teleportation
             // The world parameter allows cross-world teleportation
             Teleport teleport = new Teleport(targetWorld, newPos, currentBodyRotation);
             teleport.setHeadRotation(currentHeadRotation);
@@ -4039,9 +4244,11 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     // ========== Thinking Indicator Operations ==========
 
-    /** Vertical offset for the thinking hologram above the NPC's head (in blocks) */
+    /**
+     * Vertical offset for the thinking hologram above the NPC's head (in blocks)
+     */
     private static final double THINKING_HOLOGRAM_Y_OFFSET = 2.0; // was 2.5
-    
+
     /** Attachment offset for MountedComponent (Vector3f for the mount system) */
     private static final Vector3f THINKING_INDICATOR_OFFSET = new Vector3f(0.0f, 2.0f, 0.0f);
 
@@ -4190,7 +4397,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         if (npcInstanceData == null || npcInstanceData.entityRef() == null) {
             return;
         }
-        
+
         World world = getWorldForHologram(hologramRef, npcInstanceId);
         if (world == null) {
             return;
@@ -4216,8 +4423,11 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
     /**
-     * Start the animation task that cycles through "Thinking .", "Thinking ..", "Thinking ..." text.
-     * The position is automatically handled by the MountedComponent - no manual updates needed.
+     * Start the animation task that cycles through "Thinking .", "Thinking ..",
+     * "Thinking ..." text.
+     * The position is automatically handled by the MountComponent theoretically,
+     * but
+     * manually updated here to correctly handle chunk changes.
      * 
      * @param npcInstanceId The NPC's instance ID
      * @param hologramRef   Reference to the hologram entity (to update)
@@ -4225,40 +4435,43 @@ public class HytaleServerAdapter implements HytaleAPI {
      */
     private void startThinkingAnimation(UUID npcInstanceId, Ref<EntityStore> npcEntityRef,
             Ref<EntityStore> hologramRef, World world) {
+        AtomicInteger tickCount = new AtomicInteger(0);
         AtomicInteger stateIndex = new AtomicInteger(0);
+        AtomicReference<ScheduledFuture<?>> selfRef = new AtomicReference<>();
 
-        ScheduledFuture<?> animationTask = rotationScheduler.scheduleAtFixedRate(() -> {
+        Runnable taskRunnable = () -> {
             try {
+                ScheduledFuture<?> self = selfRef.get();
                 // [Shutdown Fix] Check shutdown flag first
                 if (isShuttingDown() || Thread.currentThread().isInterrupted()) {
-                    cancelThinkingAnimation(npcInstanceId);
+                    cancelSpecificThinkingAnimation(npcInstanceId, self);
                     return;
                 }
 
-                // Check if this task has been cancelled (removed from map)
+                // IF there's no self in the map, OR someone else is in the map, cancel this
+                // one.
                 ScheduledFuture<?> currentTask = thinkingAnimationTasks.get(npcInstanceId);
-                if (currentTask == null) {
-                    // Task was cancelled, stop execution
-                    Thread.currentThread().interrupt();
+                if (currentTask != self) {
+                    if (self != null) {
+                        self.cancel(false); // don't interrupt just cancel
+                    }
                     return;
                 }
 
                 // Check if hologram is still valid
                 if (!hologramRef.isValid()) {
-                    cancelThinkingAnimation(npcInstanceId);
+                    cancelSpecificThinkingAnimation(npcInstanceId, self);
                     return;
                 }
 
                 // [Shutdown Fix] Stop if no players online (Server shutting down?)
-                // Use Universe directly to avoid our wrapper's checks during shutdown
                 try {
                     if (Universe.get().getPlayers().isEmpty()) {
-                        cancelThinkingAnimation(npcInstanceId);
+                        cancelSpecificThinkingAnimation(npcInstanceId, self);
                         return;
                     }
                 } catch (Exception e) {
-                    // During shutdown, player list may be inaccessible
-                    cancelThinkingAnimation(npcInstanceId);
+                    cancelSpecificThinkingAnimation(npcInstanceId, self);
                     return;
                 }
 
@@ -4270,30 +4483,35 @@ public class HytaleServerAdapter implements HytaleAPI {
                     return;
                 }
 
-                // Cycle to next state
-                int nextIndex = (stateIndex.incrementAndGet()) % THINKING_STATES.length;
-                String newText = THINKING_STATES[nextIndex];
+                // Tick every 50ms
+                int currentTick = tickCount.incrementAndGet();
+                boolean updateText = (currentTick % 5 == 0); // 5 * 50ms = 250ms
+
+                String newText = null;
+                if (updateText) {
+                    int nextIndex = (stateIndex.incrementAndGet()) % THINKING_STATES.length;
+                    newText = THINKING_STATES[nextIndex];
+                }
+                final String textToUpdate = newText;
 
                 // Update nameplate text AND position on world thread
                 // Use safeWorldExecute to handle shutdown gracefully
                 safeWorldExecute(world, () -> {
                     try {
-                        // Double-check shutdown inside the task
-                        if (isShuttingDown()) {
+                        if (isShuttingDown())
                             return;
-                        }
 
                         Store<EntityStore> hologramStore = hologramRef.getStore();
                         Store<EntityStore> npcStore = npcEntityRef.getStore();
 
-                        if (hologramStore == null || npcStore == null) {
+                        if (hologramStore == null || npcStore == null)
                             return;
-                        }
 
-                        // Update nameplate text
-                        Nameplate nameplate = hologramStore.getComponent(hologramRef, Nameplate.getComponentType());
-                        if (nameplate != null) {
-                            nameplate.setText(newText);
+                        if (updateText) {
+                            Nameplate nameplate = hologramStore.getComponent(hologramRef, Nameplate.getComponentType());
+                            if (nameplate != null) {
+                                nameplate.setText(textToUpdate);
+                            }
                         }
 
                         // Update hologram position to follow NPC
@@ -4316,11 +4534,18 @@ public class HytaleServerAdapter implements HytaleAPI {
                 });
             } catch (Exception e) {
                 logger.debug("[Hycompanion] Error in thinking animation task: " + e.getMessage());
-                cancelThinkingAnimation(npcInstanceId);
+                hideThinkingIndicator(npcInstanceId); // Cleanly safely hide it on exception
             }
-        }, THINKING_ANIMATION_INTERVAL_MS, THINKING_ANIMATION_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        };
 
-        thinkingAnimationTasks.put(npcInstanceId, animationTask);
+        ScheduledFuture<?> animationTask = rotationScheduler.scheduleAtFixedRate(taskRunnable, 0, 50,
+                TimeUnit.MILLISECONDS);
+        selfRef.set(animationTask);
+
+        ScheduledFuture<?> existing = thinkingAnimationTasks.put(npcInstanceId, animationTask);
+        if (existing != null && !existing.isCancelled()) {
+            existing.cancel(false);
+        }
     }
 
     /**
@@ -4333,6 +4558,17 @@ public class HytaleServerAdapter implements HytaleAPI {
             boolean cancelled = task.cancel(true);
             logger.debug("[Hycompanion] Cancelled thinking animation for NPC: " + npcInstanceId + " (success: "
                     + cancelled + ")");
+        }
+    }
+
+    /**
+     * Cancel a specific thinking animation task to avoid deleting new replacements
+     * map references
+     */
+    private void cancelSpecificThinkingAnimation(UUID npcInstanceId, ScheduledFuture<?> task) {
+        if (task != null) {
+            task.cancel(false);
+            thinkingAnimationTasks.remove(npcInstanceId, task);
         }
     }
 
@@ -4526,7 +4762,8 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
     /**
-     * Get the world for a hologram entity, falling back to NPC's world and default world.
+     * Get the world for a hologram entity, falling back to NPC's world and default
+     * world.
      */
     private World getWorldForHologram(Ref<EntityStore> hologramRef, UUID npcInstanceId) {
         World world = null;
@@ -4543,7 +4780,8 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Fall back to NPC's world
         if (world == null) {
             NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
-            String worldName = npcData != null && npcData.spawnLocation() != null ? npcData.spawnLocation().world() : null;
+            String worldName = npcData != null && npcData.spawnLocation() != null ? npcData.spawnLocation().world()
+                    : null;
             world = worldName != null ? Universe.get().getWorld(worldName) : null;
         }
         // Final fallback to default world
@@ -4902,16 +5140,9 @@ public class HytaleServerAdapter implements HytaleAPI {
             targetSlot = "hotbar_0";
         }
 
-        // Get the item from asset registry (safe to do outside world thread)
-        var itemAssetMap = com.hypixel.hytale.server.core.asset.type.item.config.Item.getAssetMap();
-        var item = itemAssetMap.getAsset(itemId);
-        if (item == null) {
-            return EquipResult.failed("Item not found: " + itemId);
-        }
-
         CompletableFuture<EquipResult> equipResultFuture = new CompletableFuture<>();
         String finalTargetSlot = targetSlot;
-        
+
         try {
             world.execute(() -> {
                 try {
@@ -4927,60 +5158,18 @@ public class HytaleServerAdapter implements HytaleAPI {
                         return;
                     }
 
-                    // Create item stack
-                    ItemStack itemStack = new ItemStack(itemId, 1, null);
-                    Map<String, Object> previousItem = null;
-
-                    // Equip to appropriate slot
-                    switch (finalTargetSlot) {
-                        case "head":
-                        case "chest":
-                        case "hands":
-                        case "legs":
-                            ItemContainer armor = inventory.getArmor();
-                            int armorSlot = getArmorSlotIndex(finalTargetSlot);
-                            if (armorSlot >= 0) {
-                                ItemStack existing = armor.getItemStack((short) armorSlot);
-                                if (existing != null && !existing.isEmpty()) {
-                                    previousItem = Map.of(
-                                        "itemId", existing.getItem().getId(),
-                                        "quantity", existing.getQuantity()
-                                    );
-                                }
-                                armor.setItemStackForSlot((short) armorSlot, itemStack);
-                            }
-                            break;
-                        case "hotbar_0":
-                        case "hotbar_1":
-                        case "hotbar_2":
-                            ItemContainer hotbar = inventory.getHotbar();
-                            int hotbarSlot = Integer.parseInt(finalTargetSlot.replace("hotbar_", ""));
-                            ItemStack existing = hotbar.getItemStack((short) hotbarSlot);
-                            if (existing != null && !existing.isEmpty()) {
-                                previousItem = Map.of(
-                                    "itemId", existing.getItem().getId(),
-                                    "quantity", existing.getQuantity()
-                                );
-                            }
-                            hotbar.setItemStackForSlot((short) hotbarSlot, itemStack);
-                            inventory.setActiveHotbarSlot((byte) hotbarSlot);
-                            break;
-                        default:
-                            equipResultFuture.complete(EquipResult.failed("Unknown slot: " + finalTargetSlot));
-                            return;
-                    }
-
-                    logger.info("[Hycompanion] Equipped " + itemId + " to " + finalTargetSlot + " for NPC " + npcInstanceId);
-                    equipResultFuture.complete(EquipResult.success(itemId, finalTargetSlot, previousItem));
+                    EquipResult equipResult = equipItemInInventory(npcInstanceId, itemId, finalTargetSlot, inventory);
+                    equipResultFuture.complete(equipResult);
                 } catch (Exception e) {
                     equipResultFuture.completeExceptionally(e);
                 }
             });
             return equipResultFuture.get();
         } catch (Exception e) {
-            logger.error("[Hycompanion] Error equipping item: " + e.getMessage());
+            String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            logger.error("[Hycompanion] Error equipping item: " + reason);
             Sentry.captureException(e);
-            return EquipResult.failed("Error: " + e.getMessage());
+            return EquipResult.failed("Error: " + reason);
         }
     }
 
@@ -4992,6 +5181,146 @@ public class HytaleServerAdapter implements HytaleAPI {
             case "legs" -> 3;
             default -> -1;
         };
+    }
+
+    private record InventoryItemLocation(ItemContainer container, short slot, ItemStack stack) {
+    }
+
+    private InventoryItemLocation findInventoryItemById(Inventory inventory, String itemId) {
+        if (inventory == null || itemId == null || itemId.isEmpty()) {
+            return null;
+        }
+
+        // Prefer hotbar first (more likely to be "equippable"), then storage, then
+        // armor.
+        ItemContainer hotbar = inventory.getHotbar();
+        for (short i = 0; i < hotbar.getCapacity(); i++) {
+            ItemStack stack = hotbar.getItemStack(i);
+            if (stack != null && !stack.isEmpty() && itemId.equalsIgnoreCase(stack.getItem().getId())) {
+                return new InventoryItemLocation(hotbar, i, stack);
+            }
+        }
+
+        ItemContainer storage = inventory.getStorage();
+        for (short i = 0; i < storage.getCapacity(); i++) {
+            ItemStack stack = storage.getItemStack(i);
+            if (stack != null && !stack.isEmpty() && itemId.equalsIgnoreCase(stack.getItem().getId())) {
+                return new InventoryItemLocation(storage, i, stack);
+            }
+        }
+
+        ItemContainer armor = inventory.getArmor();
+        for (short i = 0; i < armor.getCapacity(); i++) {
+            ItemStack stack = armor.getItemStack(i);
+            if (stack != null && !stack.isEmpty() && itemId.equalsIgnoreCase(stack.getItem().getId())) {
+                return new InventoryItemLocation(armor, i, stack);
+            }
+        }
+
+        return null;
+    }
+
+    private String buildInventoryItemList(Inventory inventory) {
+        if (inventory == null) {
+            return "[]";
+        }
+
+        List<String> entries = new ArrayList<>();
+
+        ItemContainer hotbar = inventory.getHotbar();
+        for (short i = 0; i < hotbar.getCapacity(); i++) {
+            ItemStack stack = hotbar.getItemStack(i);
+            if (stack != null && !stack.isEmpty()) {
+                entries.add("hotbar_" + i + ":" + stack.getItem().getId() + " x" + stack.getQuantity());
+            }
+        }
+
+        ItemContainer storage = inventory.getStorage();
+        for (short i = 0; i < storage.getCapacity(); i++) {
+            ItemStack stack = storage.getItemStack(i);
+            if (stack != null && !stack.isEmpty()) {
+                entries.add("storage_" + i + ":" + stack.getItem().getId() + " x" + stack.getQuantity());
+            }
+        }
+
+        ItemContainer armor = inventory.getArmor();
+        String[] armorSlots = { "head", "chest", "hands", "legs" };
+        for (short i = 0; i < armor.getCapacity() && i < armorSlots.length; i++) {
+            ItemStack stack = armor.getItemStack(i);
+            if (stack != null && !stack.isEmpty()) {
+                entries.add("armor_" + armorSlots[i] + ":" + stack.getItem().getId() + " x" + stack.getQuantity());
+            }
+        }
+
+        return entries.isEmpty() ? "[]" : "[" + String.join(", ", entries) + "]";
+    }
+
+    private EquipResult equipItemInInventory(UUID npcInstanceId, String itemId, String finalTargetSlot,
+            Inventory inventory) {
+        InventoryItemLocation source = findInventoryItemById(inventory, itemId);
+        if (source == null) {
+            String available = buildInventoryItemList(inventory);
+            String msg = "Cannot equip '" + itemId + "': item not found in NPC inventory. " +
+                    "requestedSlot='" + finalTargetSlot + "', availableItems=" + available;
+            return EquipResult.failed(msg);
+        }
+
+        ItemContainer targetContainer;
+        short targetIndex;
+
+        switch (finalTargetSlot) {
+            case "head":
+            case "chest":
+            case "hands":
+            case "legs":
+                int armorSlot = getArmorSlotIndex(finalTargetSlot);
+                if (armorSlot < 0) {
+                    return EquipResult.failed("Unknown armor slot: " + finalTargetSlot);
+                }
+                targetContainer = inventory.getArmor();
+                targetIndex = (short) armorSlot;
+                break;
+            case "hotbar_0":
+            case "hotbar_1":
+            case "hotbar_2":
+                int hotbarSlot = Integer.parseInt(finalTargetSlot.replace("hotbar_", ""));
+                if (hotbarSlot < 0 || hotbarSlot >= inventory.getHotbar().getCapacity()) {
+                    return EquipResult.failed("Invalid hotbar slot '" + finalTargetSlot + "' for capacity " +
+                            inventory.getHotbar().getCapacity());
+                }
+                targetContainer = inventory.getHotbar();
+                targetIndex = (short) hotbarSlot;
+                break;
+            default:
+                return EquipResult.failed("Unknown slot: " + finalTargetSlot);
+        }
+
+        ItemStack targetExisting = targetContainer.getItemStack(targetIndex);
+        Map<String, Object> previousItem = null;
+        if (targetExisting != null && !targetExisting.isEmpty()) {
+            previousItem = Map.of(
+                    "itemId", targetExisting.getItem().getId(),
+                    "quantity", targetExisting.getQuantity());
+        }
+
+        if (source.container() == targetContainer && source.slot() == targetIndex) {
+            logger.info("[Hycompanion] Equip no-op: " + itemId + " already in " + finalTargetSlot +
+                    " for NPC " + npcInstanceId);
+            if (finalTargetSlot.startsWith("hotbar_")) {
+                inventory.setActiveHotbarSlot((byte) targetIndex);
+            }
+            return EquipResult.success(itemId, finalTargetSlot, previousItem);
+        }
+
+        targetContainer.setItemStackForSlot(targetIndex, source.stack());
+        source.container().setItemStackForSlot(source.slot(), targetExisting);
+
+        if (finalTargetSlot.startsWith("hotbar_")) {
+            inventory.setActiveHotbarSlot((byte) targetIndex);
+        }
+
+        logger.info("[Hycompanion] Equipped " + itemId + " to " + finalTargetSlot + " for NPC " + npcInstanceId);
+        return EquipResult.success(itemId, finalTargetSlot, previousItem);
     }
 
     @Override
@@ -5023,87 +5352,174 @@ public class HytaleServerAdapter implements HytaleAPI {
                         return;
                     }
 
+                    Inventory inventory = npcEntity.getInventory();
+                    if (inventory == null) {
+                        breakResultFuture.complete(BreakResult.failed("NPC has no inventory"));
+                        return;
+                    }
+
+                    TransformComponent breakTransform = store.getComponent(entityRef,
+                            TransformComponent.getComponentType());
+                    if (breakTransform == null) {
+                        breakResultFuture.complete(BreakResult.failed("NPC transform not found"));
+                        return;
+                    }
+
+                    Vector3d npcPos = breakTransform.getPosition();
+                    double distance = npcPos
+                            .distanceTo(new Vector3d(targetBlock.x(), targetBlock.y(), targetBlock.z()));
+                    if (distance > 5.0) {
+                        breakResultFuture.complete(BreakResult.failed(String.format(java.util.Locale.US,
+                                "OUT_OF_RANGE: Target block is too far away (%.1f blocks). Max distance is 5 blocks, please move closer.",
+                                distance)));
+                        return;
+                    }
+
                     // Equip tool if specified
                     if (toolItemId != null && !toolItemId.isEmpty()) {
-                        EquipResult equipResult = equipItem(npcInstanceId, toolItemId, "hotbar_0");
+                        EquipResult equipResult = equipItemInInventory(npcInstanceId, toolItemId, "hotbar_0",
+                                inventory);
                         if (!equipResult.success()) {
                             logger.warn("[Hycompanion] Failed to equip tool: " + equipResult.error());
                         }
                     }
 
                     Vector3i blockPos = new Vector3i(
-                        (int) Math.floor(targetBlock.x()),
-                        (int) Math.floor(targetBlock.y()),
-                        (int) Math.floor(targetBlock.z())
-                    );
+                            (int) Math.floor(targetBlock.x()),
+                            (int) Math.floor(targetBlock.y()),
+                            (int) Math.floor(targetBlock.z()));
+                    int safeMaxAttempts = Math.max(1, Math.min(maxAttempts, 30));
+
+                    // Step 1: Rotate NPC to face target block directly (already on world thread).
+                    double dx = targetBlock.x() - npcPos.getX();
+                    double dz = targetBlock.z() - npcPos.getZ();
+                    if ((dx * dx) + (dz * dz) >= 0.0001d) {
+                        float targetYaw = TrigMathUtil.atan2(-dx, -dz);
+                        Vector3f bodyRotation = breakTransform.getRotation();
+                        bodyRotation.setYaw(targetYaw);
+                        bodyRotation.setPitch(0.0f);
+                        bodyRotation.setRoll(0.0f);
+                        breakTransform.setRotation(bodyRotation);
+                        npcEntity.setLeashHeading(targetYaw);
+                        npcEntity.setLeashPitch(0.0f);
+                    }
 
                     // Get block type before breaking
-                    var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType.getAssetMap();
-                    int blockId = world.getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.getX(), blockPos.getZ()))
-                        .getBlock(blockPos.getX(), blockPos.getY(), blockPos.getZ());
+                    var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType
+                            .getAssetMap();
+                    long targetChunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.getX(),
+                            blockPos.getZ());
+                    var targetChunk = world.getChunkIfLoaded(targetChunkIndex);
+                    if (targetChunk == null) {
+                        breakResultFuture.complete(BreakResult.failed("Chunk not loaded"));
+                        return;
+                    }
+                    int blockId = targetChunk.getBlock(blockPos.getX(), blockPos.getY(), blockPos.getZ());
                     String blockIdStr = "unknown";
                     var blockType = blockTypeAssetMap.getAsset(blockId);
                     if (blockType != null) {
                         blockIdStr = blockType.getId();
                     }
 
-                    // Perform block breaking using BlockHarvestUtils.performBlockDamage for gradual breaking
-                    // This respects the equipped tool and doesn't trigger connected blocks (like whole trees)
-                    long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.getX(), blockPos.getZ());
+                    // Perform block breaking using BlockHarvestUtils.performBlockDamage for gradual
+                    // breaking
+                    // This respects the equipped tool and doesn't trigger connected blocks (like
+                    // whole trees)
+                    long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.getX(),
+                            blockPos.getZ());
                     var chunkStore = world.getChunkStore().getStore();
                     Ref<ChunkStore> chunkRef = chunkStore.getExternalData().getChunkReference(chunkIndex);
-                    
+
                     if (chunkRef == null || !chunkRef.isValid()) {
                         breakResultFuture.complete(BreakResult.failed("Chunk not loaded"));
                         return;
                     }
-                    
+
                     // Get the held item for tool power calculation
                     ItemStack heldItemStack = null;
-                    Inventory inventory = npcEntity.getInventory();
-                    if (inventory != null) {
-                        heldItemStack = inventory.getItemInHand();
-                    }
-                    
+                    heldItemStack = inventory.getItemInHand();
+
                     // Perform gradual block damage until broken
                     int attempts = 0;
                     boolean broken = false;
-                    while (attempts < maxAttempts && !broken) {
-                        broken = BlockHarvestUtils.performBlockDamage(
-                            npcEntity,      // entity (LivingEntity)
-                            entityRef,      // ref (Ref<EntityStore>)
-                            blockPos,       // targetBlockPos
-                            heldItemStack,  // itemStack
-                            null,           // tool (can be null, will be derived from itemStack)
-                            null,           // toolId
-                            false,          // matchTool
-                            1.0f,           // damageScale
-                            0,              // setBlockSettings
-                            chunkRef,       // chunkReference
-                            store,          // entityStore
-                            chunkStore      // chunkStore
-                        );
-                        attempts++;
-                        if (!broken) {
-                            try {
-                                Thread.sleep(400); // Wait between hits
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                break;
+                    float currentBlockHealth = 1.0f; // Start at full health (1.0 = no damage)
+
+                    while (attempts < safeMaxAttempts && !broken) {
+                        // Step 2: Play swing animation before each hit
+                        try {
+                            npcEntity.playAnimation(entityRef, com.hypixel.hytale.protocol.AnimationSlot.Action,
+                                    "Swing", store);
+                        } catch (Exception e) {
+                            logger.debug("[Hycompanion] Could not play swing animation: " + e.getMessage());
+                        }
+
+                        // Calculate damage for this hit (based on tool power)
+                        float damagePerHit = 0.25f; // Default 25% per hit
+                        if (heldItemStack != null && !heldItemStack.isEmpty()) {
+                            var itemTool = heldItemStack.getItem().getTool();
+                            if (itemTool != null) {
+                                var specs = itemTool.getSpecs();
+                                if (specs != null && specs.length > 0) {
+                                    // Use first spec's power - higher power = more damage per hit
+                                    damagePerHit = Math.max(0.1f, Math.min(0.5f, specs[0].getPower() * 0.1f));
+                                }
                             }
                         }
+
+                        // Step 3: Broadcast block damage visual to nearby players BEFORE applying
+                        // damage
+                        // This shows the block cracking animation
+                        currentBlockHealth = Math.max(0.0f, currentBlockHealth - damagePerHit);
+                        try {
+                            com.hypixel.hytale.protocol.BlockPosition blockPosition = new com.hypixel.hytale.protocol.BlockPosition(
+                                    blockPos.getX(), blockPos.getY(), blockPos.getZ());
+                            com.hypixel.hytale.protocol.packets.world.UpdateBlockDamage damagePacket = new com.hypixel.hytale.protocol.packets.world.UpdateBlockDamage(
+                                    blockPosition, currentBlockHealth, -damagePerHit);
+
+                            // Send to all nearby players
+                            for (com.hypixel.hytale.server.core.universe.PlayerRef playerRef : world.getPlayerRefs()) {
+                                com.hypixel.hytale.component.Ref<EntityStore> playerRef2 = playerRef.getReference();
+                                if (playerRef2 != null && playerRef2.isValid()) {
+                                    // Check if player is within viewing distance (e.g., 50 blocks)
+                                    com.hypixel.hytale.server.core.modules.entity.component.TransformComponent playerTransform = store
+                                            .getComponent(playerRef2,
+                                                    com.hypixel.hytale.server.core.modules.entity.component.TransformComponent
+                                                            .getComponentType());
+                                    if (playerTransform != null) {
+                                        double dist = playerTransform.getPosition().distanceTo(
+                                                new Vector3d(blockPos.getX(), blockPos.getY(), blockPos.getZ()));
+                                        if (dist < 50.0) {
+                                            PacketDispatchUtil.trySendPacketToPlayer(playerRef, damagePacket, logger);
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            logger.debug("[Hycompanion] Could not broadcast block damage: " + e.getMessage());
+                        }
+
+                        // Step 4: Apply actual block damage
+                        broken = BlockHarvestUtils.performBlockDamage(
+                                npcEntity, // entity (LivingEntity)
+                                entityRef, // ref (Ref<EntityStore>)
+                                blockPos, // targetBlockPos
+                                heldItemStack, // itemStack
+                                null, // tool (can be null, will be derived from itemStack)
+                                null, // toolId
+                                false, // matchTool
+                                1.0f, // damageScale
+                                0, // setBlockSettings
+                                chunkRef, // chunkReference
+                                store, // entityStore
+                                chunkStore // chunkStore
+                        );
+                        attempts++;
+
                     }
 
                     if (!broken) {
                         breakResultFuture.complete(BreakResult.unbroken("BLOCK_UNBREAKABLE"));
                         return;
-                    }
-
-                    // Wait for drops to settle
-                    try {
-                        Thread.sleep(1000);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
                     }
 
                     // Scan for dropped items
@@ -5116,26 +5532,26 @@ public class HytaleServerAdapter implements HytaleAPI {
                     }
 
                     Map<String, Object> dropLocation = Map.of(
-                        "x", targetBlock.x(),
-                        "y", targetBlock.y(),
-                        "z", targetBlock.z()
-                    );
+                            "x", targetBlock.x(),
+                            "y", targetBlock.y(),
+                            "z", targetBlock.z());
 
-                    logger.info("[Hycompanion] Broke block " + blockIdStr + " at " + targetBlock + " for NPC " + npcInstanceId);
-                    breakResultFuture.complete(BreakResult.success(blockIdStr, attempts, drops, dropLocation, durability));
+                    logger.info("[Hycompanion] Broke block " + blockIdStr + " at " + targetBlock + " for NPC "
+                            + npcInstanceId);
+                    breakResultFuture
+                            .complete(BreakResult.success(blockIdStr, attempts, drops, dropLocation, durability));
                 } catch (Exception e) {
                     breakResultFuture.completeExceptionally(e);
                 }
             });
             return breakResultFuture.get();
         } catch (Exception e) {
-            logger.error("[Hycompanion] Error breaking block: " + e.getMessage());
+            String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            logger.error("[Hycompanion] Error breaking block: " + reason);
             Sentry.captureException(e);
-            return BreakResult.failed("Error: " + e.getMessage());
+            return BreakResult.failed("Error: " + reason);
         }
     }
-
-
 
     private List<Map<String, Object>> scanForDrops(Store<EntityStore> store, Location center, int radius) {
         List<Map<String, Object>> drops = new ArrayList<>();
@@ -5150,21 +5566,23 @@ public class HytaleServerAdapter implements HytaleAPI {
                     .get(store.getExternalData());
 
             for (Ref<EntityStore> ref : allEntities.values()) {
-                if (!ref.isValid()) continue;
+                if (!ref.isValid())
+                    continue;
 
-                com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = 
-                    store.getComponent(ref, com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
-                if (itemComp == null) continue;
+                com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = store.getComponent(ref,
+                        com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
+                if (itemComp == null)
+                    continue;
 
                 TransformComponent transform = store.getComponent(ref, TransformComponent.getComponentType());
-                if (transform == null) continue;
+                if (transform == null)
+                    continue;
 
                 double distance = transform.getPosition().distanceTo(centerPos);
                 if (distance <= radius) {
                     drops.add(Map.of(
-                        "itemId", itemComp.getItemStack().getItem().getId(),
-                        "quantity", itemComp.getItemStack().getQuantity()
-                    ));
+                            "itemId", itemComp.getItemStack().getItem().getId(),
+                            "quantity", itemComp.getItemStack().getQuantity()));
                 }
             }
         } catch (Exception e) {
@@ -5208,7 +5626,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                         return;
                     }
 
-                    TransformComponent npcTransform = store.getComponent(entityRef, TransformComponent.getComponentType());
+                    TransformComponent npcTransform = store.getComponent(entityRef,
+                            TransformComponent.getComponentType());
                     if (npcTransform == null) {
                         pickupResultFuture.complete(PickupResult.failed("NPC has no transform"));
                         return;
@@ -5216,11 +5635,14 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                     Vector3d npcPos = npcTransform.getPosition();
                     List<Map<String, Object>> pickedUpItems = new ArrayList<>();
+                    List<Ref<EntityStore>> entitiesToRemove = new ArrayList<>();
                     int itemsPickedUp = 0;
                     int itemsRemaining = 0;
+                    int matchingItemEntitiesFound = 0;
 
                     // Debug logging
-                    logger.debug("[Hycompanion] Pickup started: radius=" + radius + ", itemId=" + itemId + ", npcPos=" + npcPos);
+                    logger.debug("[Hycompanion] Pickup started: radius=" + radius + ", itemId=" + itemId + ", npcPos="
+                            + npcPos);
                     logger.debug("[Hycompanion] NPC storage capacity: " + inventory.getStorage().getCapacity());
 
                     // Use reflection to access entitiesByUuid map
@@ -5235,35 +5657,44 @@ public class HytaleServerAdapter implements HytaleAPI {
                         int itemEntitiesFound = 0;
 
                         for (Ref<EntityStore> ref : allEntities.values()) {
-                            if (!ref.isValid()) continue;
+                            if (!ref.isValid())
+                                continue;
 
-                            com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = 
-                                store.getComponent(ref, com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
-                            if (itemComp == null) continue;
-                            
+                            com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = store
+                                    .getComponent(ref, com.hypixel.hytale.server.core.modules.entity.item.ItemComponent
+                                            .getComponentType());
+                            if (itemComp == null)
+                                continue;
+
                             itemEntitiesFound++;
 
-                            TransformComponent transform = store.getComponent(ref, TransformComponent.getComponentType());
-                            if (transform == null) continue;
+                            TransformComponent transform = store.getComponent(ref,
+                                    TransformComponent.getComponentType());
+                            if (transform == null)
+                                continue;
 
                             double distance = transform.getPosition().distanceTo(npcPos);
-                            
+
                             String droppedItemId = itemComp.getItemStack().getItem().getId();
                             int droppedQty = itemComp.getItemStack().getQuantity();
-                            
+
                             checkedEntities++;
-                            logger.debug("[Hycompanion] Checking item: " + droppedItemId + " x" + droppedQty + 
-                                " at distance " + distance + " (radius=" + radius + ")");
-                            
-                            // Add small epsilon for floating point precision (items within ~0.1 blocks of radius should be included)
+                            logger.debug("[Hycompanion] Checking item: " + droppedItemId + " x" + droppedQty +
+                                    " at distance " + distance + " (radius=" + radius + ")");
+
+                            // Add small epsilon for floating point precision (items within ~0.1 blocks of
+                            // radius should be included)
                             double effectiveRadius = radius + 0.1;
-                            if (distance > effectiveRadius) continue;
+                            if (distance > effectiveRadius)
+                                continue;
 
                             // Filter by itemId if specified
                             if (itemId != null && !itemId.isEmpty() && !droppedItemId.equals(itemId)) {
-                                logger.debug("[Hycompanion] Item ID mismatch: expected=" + itemId + ", found=" + droppedItemId);
+                                logger.debug("[Hycompanion] Item ID mismatch: expected=" + itemId + ", found="
+                                        + droppedItemId);
                                 continue;
                             }
+                            matchingItemEntitiesFound++;
 
                             if (itemsPickedUp >= maxItems) {
                                 itemsRemaining++;
@@ -5274,16 +5705,16 @@ public class HytaleServerAdapter implements HytaleAPI {
                             // Add to inventory - try storage first, then hotbar
                             ItemStack stack = itemComp.getItemStack();
                             logger.debug("[Hycompanion] Attempting to add " + droppedItemId + " to inventory");
-                            
+
                             boolean added = false;
-                            
+
                             // Try storage first
                             if (inventory.getStorage().getCapacity() > 0) {
                                 var transaction = inventory.getStorage().addItemStack(stack);
                                 added = transaction != null && transaction.getRemainder() == null;
                                 logger.debug("[Hycompanion] Storage add result: " + added);
                             }
-                            
+
                             // If storage failed or has no capacity, try hotbar
                             if (!added) {
                                 var hotbarTransaction = inventory.getHotbar().addItemStack(stack);
@@ -5292,13 +5723,14 @@ public class HytaleServerAdapter implements HytaleAPI {
                             }
 
                             if (added) {
-                                // Remove the item entity
-                                store.removeEntity(ref, com.hypixel.hytale.component.RemoveReason.REMOVE);
-                                
+                                // Mark for removal after iteration to avoid mutating the reflected entity map
+                                // while iterating it.
+                                itemComp.setRemovedByPlayerPickup(true);
+                                entitiesToRemove.add(ref);
+
                                 pickedUpItems.add(Map.of(
-                                    "itemId", droppedItemId,
-                                    "quantity", stack.getQuantity()
-                                ));
+                                        "itemId", droppedItemId,
+                                        "quantity", stack.getQuantity()));
                                 itemsPickedUp++;
                                 logger.debug("[Hycompanion] Successfully picked up " + droppedItemId);
                             } else {
@@ -5306,15 +5738,174 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 logger.debug("[Hycompanion] Failed to add to inventory (storage and hotbar full)");
                             }
                         }
-                        
-                        logger.debug("[Hycompanion] Pickup complete: checked=" + checkedEntities + 
-                            ", itemEntities=" + itemEntitiesFound + ", pickedUp=" + itemsPickedUp + ", remaining=" + itemsRemaining);
+
+                        logger.debug("[Hycompanion] Pickup complete: checked=" + checkedEntities +
+                                ", itemEntities=" + itemEntitiesFound + ", pickedUp=" + itemsPickedUp + ", remaining="
+                                + itemsRemaining);
                     } catch (Exception e) {
                         logger.error("[Hycompanion] Error during pickup: " + e.getMessage(), e);
                     }
 
+                    for (Ref<EntityStore> itemRef : entitiesToRemove) {
+                        if (!removeItemEntityFromGround(store, itemRef)) {
+                            logger.warn(
+                                    "[Hycompanion] Item was added to inventory but could not be removed from world. ref="
+                                            + itemRef);
+                        }
+                    }
+
+                    // Fallback: harvest a matching block only if no matching item entities were
+                    // found.
+                    if (itemsPickedUp == 0 && matchingItemEntitiesFound == 0 && itemId != null && !itemId.isEmpty()) {
+                        try {
+                            double effectiveRadius = radius + 0.1;
+                            List<Ref<EntityStore>> fallbackEntitiesToRemove = new ArrayList<>();
+                            int centerX = (int) Math.floor(npcPos.getX());
+                            int centerY = (int) Math.floor(npcPos.getY());
+                            int centerZ = (int) Math.floor(npcPos.getZ());
+                            int maxOffset = (int) Math.ceil(effectiveRadius);
+
+                            var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType
+                                    .getAssetMap();
+                            var chunkStore = world.getChunkStore().getStore();
+                            ItemStack heldItemStack = inventory.getItemInHand();
+
+                            boolean harvestedMatchingBlock = false;
+                            for (int x = centerX - maxOffset; x <= centerX + maxOffset
+                                    && !harvestedMatchingBlock; x++) {
+                                for (int y = Math.max(0, centerY - maxOffset); y <= Math.min(255, centerY + maxOffset)
+                                        && !harvestedMatchingBlock; y++) {
+                                    for (int z = centerZ - maxOffset; z <= centerZ + maxOffset
+                                            && !harvestedMatchingBlock; z++) {
+                                        double dist = npcPos.distanceTo(new Vector3d(x, y, z));
+                                        if (dist > effectiveRadius) {
+                                            continue;
+                                        }
+
+                                        long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x,
+                                                z);
+                                        var chunk = world.getChunkIfLoaded(chunkIndex);
+                                        if (chunk == null) {
+                                            continue;
+                                        }
+
+                                        int blockTypeId = chunk.getBlock(x, y, z);
+                                        var blockType = blockTypeAssetMap != null
+                                                ? blockTypeAssetMap.getAsset(blockTypeId)
+                                                : null;
+                                        String blockId = blockType != null ? blockType.getId() : null;
+                                        if (blockId == null || !blockId.equals(itemId)) {
+                                            continue;
+                                        }
+
+                                        Ref<ChunkStore> chunkRef = chunkStore.getExternalData()
+                                                .getChunkReference(chunkIndex);
+                                        if (chunkRef == null || !chunkRef.isValid()) {
+                                            continue;
+                                        }
+
+                                        Vector3i blockPos = new Vector3i(x, y, z);
+                                        boolean broken = false;
+                                        for (int attempt = 0; attempt < 10 && !broken; attempt++) {
+                                            broken = BlockHarvestUtils.performBlockDamage(
+                                                    npcEntity,
+                                                    entityRef,
+                                                    blockPos,
+                                                    heldItemStack,
+                                                    null,
+                                                    null,
+                                                    false,
+                                                    1.0f,
+                                                    0,
+                                                    chunkRef,
+                                                    store,
+                                                    chunkStore);
+                                        }
+
+                                        if (broken) {
+                                            harvestedMatchingBlock = true;
+                                            logger.debug("[Hycompanion] Harvested block fallback for itemId=" + itemId +
+                                                    " at (" + x + "," + y + "," + z + ")");
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Retry pickup after block harvest to collect resulting drop entities.
+                            if (harvestedMatchingBlock && itemsPickedUp < maxItems) {
+                                Field entitiesMapField = EntityStore.class.getDeclaredField("entitiesByUuid");
+                                entitiesMapField.setAccessible(true);
+                                @SuppressWarnings("unchecked")
+                                Map<UUID, Ref<EntityStore>> allEntities = (Map<UUID, Ref<EntityStore>>) entitiesMapField
+                                        .get(store.getExternalData());
+
+                                for (Ref<EntityStore> ref : allEntities.values()) {
+                                    if (!ref.isValid())
+                                        continue;
+                                    if (itemsPickedUp >= maxItems) {
+                                        itemsRemaining++;
+                                        continue;
+                                    }
+
+                                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = store
+                                            .getComponent(ref,
+                                                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent
+                                                            .getComponentType());
+                                    if (itemComp == null)
+                                        continue;
+
+                                    TransformComponent transform = store.getComponent(ref,
+                                            TransformComponent.getComponentType());
+                                    if (transform == null)
+                                        continue;
+
+                                    if (transform.getPosition().distanceTo(npcPos) > effectiveRadius)
+                                        continue;
+
+                                    String droppedItemId = itemComp.getItemStack().getItem().getId();
+                                    if (!droppedItemId.equals(itemId))
+                                        continue;
+
+                                    ItemStack stack = itemComp.getItemStack();
+                                    boolean added = false;
+
+                                    if (inventory.getStorage().getCapacity() > 0) {
+                                        var transaction = inventory.getStorage().addItemStack(stack);
+                                        added = transaction != null && transaction.getRemainder() == null;
+                                    }
+                                    if (!added) {
+                                        var hotbarTransaction = inventory.getHotbar().addItemStack(stack);
+                                        added = hotbarTransaction != null && hotbarTransaction.getRemainder() == null;
+                                    }
+
+                                    if (added) {
+                                        itemComp.setRemovedByPlayerPickup(true);
+                                        fallbackEntitiesToRemove.add(ref);
+                                        pickedUpItems.add(Map.of(
+                                                "itemId", droppedItemId,
+                                                "quantity", stack.getQuantity()));
+                                        itemsPickedUp++;
+                                    } else {
+                                        itemsRemaining++;
+                                    }
+                                }
+                            }
+
+                            for (Ref<EntityStore> itemRef : fallbackEntitiesToRemove) {
+                                if (!removeItemEntityFromGround(store, itemRef)) {
+                                    logger.warn(
+                                            "[Hycompanion] Fallback pickup added item but could not remove ground entity. ref="
+                                                    + itemRef);
+                                }
+                            }
+                        } catch (Exception e) {
+                            logger.error("[Hycompanion] Error during block-harvest fallback pickup: " + e.getMessage(),
+                                    e);
+                        }
+                    }
+
                     logger.info("[Hycompanion] Picked up " + itemsPickedUp + " items for NPC " + npcInstanceId);
-                    
+
                     // Build error message if items were found but couldn't be picked up
                     String error = null;
                     if (itemsPickedUp == 0 && itemsRemaining > 0) {
@@ -5322,10 +5913,9 @@ public class HytaleServerAdapter implements HytaleAPI {
                     } else if (itemsRemaining > 0) {
                         error = "Some items remaining (inventory may be full)";
                     }
-                    
+
                     pickupResultFuture.complete(new PickupResult(
-                        true, itemsPickedUp, pickedUpItems, itemsRemaining, error
-                    ));
+                            true, itemsPickedUp, pickedUpItems, itemsRemaining, error));
                 } catch (Exception e) {
                     pickupResultFuture.completeExceptionally(e);
                 }
@@ -5338,8 +5928,28 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
     }
 
+    private boolean removeItemEntityFromGround(Store<EntityStore> store, Ref<EntityStore> itemRef) {
+        if (itemRef == null || !itemRef.isValid()) {
+            return true;
+        }
+
+        try {
+            store.removeEntity(itemRef, com.hypixel.hytale.component.RemoveReason.REMOVE);
+            if (itemRef.isValid()) {
+                // Retry using holder-based path used in server command utilities.
+                store.removeEntity(itemRef, EntityStore.REGISTRY.newHolder(),
+                        com.hypixel.hytale.component.RemoveReason.REMOVE);
+            }
+            return !itemRef.isValid();
+        } catch (Exception e) {
+            logger.debug("[Hycompanion] Failed to remove picked item entity: " + e.getMessage());
+            return false;
+        }
+    }
+
     @Override
-    public UseResult useHeldItem(UUID npcInstanceId, Location target, int useCount, long intervalMs, TargetType targetType) {
+    public UseResult useHeldItem(UUID npcInstanceId, Location target, int useCount, long intervalMs,
+            TargetType targetType) {
         NpcInstanceData npcData = npcInstanceEntities.get(npcInstanceId);
         if (npcData == null) {
             return UseResult.failed("NPC not found");
@@ -5455,8 +6065,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                     int remainingQuantity = 0;
 
                     logger.debug("[Hycompanion] Drop: looking for '" + itemId + "' x" + quantity);
-                    logger.debug("[Hycompanion] Drop: hotbar capacity=" + inventory.getHotbar().getCapacity() + 
-                        ", storage capacity=" + inventory.getStorage().getCapacity());
+                    logger.debug("[Hycompanion] Drop: hotbar capacity=" + inventory.getHotbar().getCapacity() +
+                            ", storage capacity=" + inventory.getStorage().getCapacity());
 
                     // Check hotbar first
                     ItemContainer hotbar = inventory.getHotbar();
@@ -5465,13 +6075,14 @@ public class HytaleServerAdapter implements HytaleAPI {
                         ItemStack stack = hotbar.getItemStack(i);
                         if (stack != null && !stack.isEmpty()) {
                             String stackId = stack.getItem().getId();
-                            logger.debug("[Hycompanion] Drop: hotbar[" + i + "]='" + stackId + "' x" + stack.getQuantity());
+                            logger.debug(
+                                    "[Hycompanion] Drop: hotbar[" + i + "]='" + stackId + "' x" + stack.getQuantity());
                             // Check exact match or partial match
                             boolean matches = itemId.equals(stackId) || stackId.contains(itemId);
                             if (matches) {
                                 int dropQty = Math.min(quantity, stack.getQuantity());
                                 toDrop = new ItemStack(stackId, dropQty, null);
-                                
+
                                 if (stack.getQuantity() <= dropQty) {
                                     hotbar.setItemStackForSlot(i, null);
                                 } else {
@@ -5479,7 +6090,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                                     hotbar.setItemStackForSlot(i, newStack);
                                     remainingQuantity = newStack.getQuantity();
                                 }
-                                logger.debug("[Hycompanion] Drop: found in hotbar, dropQty=" + dropQty + ", actualId=" + stackId);
+                                logger.debug("[Hycompanion] Drop: found in hotbar, dropQty=" + dropQty + ", actualId="
+                                        + stackId);
                                 break;
                             }
                         }
@@ -5493,13 +6105,14 @@ public class HytaleServerAdapter implements HytaleAPI {
                             ItemStack stack = storage.getItemStack(i);
                             if (stack != null && !stack.isEmpty()) {
                                 String stackId = stack.getItem().getId();
-                                logger.debug("[Hycompanion] Drop: storage[" + i + "]='" + stackId + "' x" + stack.getQuantity());
+                                logger.debug("[Hycompanion] Drop: storage[" + i + "]='" + stackId + "' x"
+                                        + stack.getQuantity());
                                 // Check exact match or partial match
                                 boolean matches = itemId.equals(stackId) || stackId.contains(itemId);
                                 if (matches) {
                                     int dropQty = Math.min(quantity, stack.getQuantity());
                                     toDrop = new ItemStack(stackId, dropQty, null);
-                                    
+
                                     if (stack.getQuantity() <= dropQty) {
                                         storage.setItemStackForSlot(i, null);
                                     } else {
@@ -5507,7 +6120,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                                         storage.setItemStackForSlot(i, newStack);
                                         remainingQuantity = newStack.getQuantity();
                                     }
-                                    logger.debug("[Hycompanion] Drop: found in storage, dropQty=" + dropQty + ", actualId=" + stackId);
+                                    logger.debug("[Hycompanion] Drop: found in storage, dropQty=" + dropQty
+                                            + ", actualId=" + stackId);
                                     break;
                                 }
                             }
@@ -5520,27 +6134,29 @@ public class HytaleServerAdapter implements HytaleAPI {
                         for (short i = 0; i < hotbar.getCapacity(); i++) {
                             ItemStack stack = hotbar.getItemStack(i);
                             if (stack != null && !stack.isEmpty()) {
-                                if (available.length() > 0) available.append(", ");
+                                if (available.length() > 0)
+                                    available.append(", ");
                                 available.append("'").append(stack.getItem().getId()).append("'");
                             }
                         }
                         for (short i = 0; i < inventory.getStorage().getCapacity(); i++) {
                             ItemStack stack = inventory.getStorage().getItemStack(i);
                             if (stack != null && !stack.isEmpty()) {
-                                if (available.length() > 0) available.append(", ");
+                                if (available.length() > 0)
+                                    available.append(", ");
                                 available.append("'").append(stack.getItem().getId()).append("'");
                             }
                         }
-                        String msg = available.length() > 0 ? 
-                            "Item '" + itemId + "' not found. Available: " + available :
-                            "Item '" + itemId + "' not found. Inventory is empty.";
+                        String msg = available.length() > 0 ? "Item '" + itemId + "' not found. Available: " + available
+                                : "Item '" + itemId + "' not found. Inventory is empty.";
                         logger.debug("[Hycompanion] Drop: " + msg);
                         dropResultFuture.complete(DropResult.failed(msg));
                         return;
                     }
 
                     // Create dropped item entity
-                    TransformComponent npcTransform = store.getComponent(entityRef, TransformComponent.getComponentType());
+                    TransformComponent npcTransform = store.getComponent(entityRef,
+                            TransformComponent.getComponentType());
                     if (npcTransform == null) {
                         dropResultFuture.complete(DropResult.failed("NPC has no transform"));
                         return;
@@ -5548,19 +6164,18 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                     Vector3d npcPos = npcTransform.getPosition();
                     Vector3f npcRot = npcTransform.getRotation();
-                    
+
                     // Calculate forward direction from NPC's yaw (rotation around Y axis)
                     float yaw = npcRot.getYaw();
                     double forwardX = -Math.sin(yaw);
                     double forwardZ = -Math.cos(yaw);
-                    
+
                     // Position slightly in front of NPC (0.5 blocks) and at hand height
                     Vector3d dropPos = new Vector3d(
-                        npcPos.getX() + forwardX * 0.5, 
-                        npcPos.getY() + 0.8, 
-                        npcPos.getZ() + forwardZ * 0.5
-                    );
-                    
+                            npcPos.getX() + forwardX * 0.5,
+                            npcPos.getY() + 0.8,
+                            npcPos.getZ() + forwardZ * 0.5);
+
                     // Gentle throw velocity: 2.0 horizontal speed + small upward arc
                     float itemThrowSpeed = 2.0f;
                     float velocityX = (float) (forwardX * itemThrowSpeed);
@@ -5568,46 +6183,51 @@ public class HytaleServerAdapter implements HytaleAPI {
                     float velocityY = 2.5f; // Gentle upward arc
 
                     // Use Hytale's ItemComponent.generateItemDrop to properly create a dropped item
-                    // This adds all necessary components: ItemComponent, TransformComponent, Velocity, 
+                    // This adds all necessary components: ItemComponent, TransformComponent,
+                    // Velocity,
                     // PhysicsValues, UUIDComponent, Intangible, and DespawnComponent
-                    com.hypixel.hytale.component.Holder<EntityStore> itemHolder = 
-                        com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.generateItemDrop(
-                            store,                    // ComponentAccessor
-                            toDrop,                   // ItemStack to drop
-                            dropPos,                  // Position (slightly in front of NPC)
-                            new com.hypixel.hytale.math.vector.Vector3f(0, 0, 0),  // Rotation
-                            velocityX,                // velocityX - forward direction
-                            velocityY,                // velocityY - gentle upward arc
-                            velocityZ                 // velocityZ - forward direction
-                        );
-                    
+                    com.hypixel.hytale.component.Holder<EntityStore> itemHolder = com.hypixel.hytale.server.core.modules.entity.item.ItemComponent
+                            .generateItemDrop(
+                                    store, // ComponentAccessor
+                                    toDrop, // ItemStack to drop
+                                    dropPos, // Position (slightly in front of NPC)
+                                    new com.hypixel.hytale.math.vector.Vector3f(0, 0, 0), // Rotation
+                                    velocityX, // velocityX - forward direction
+                                    velocityY, // velocityY - gentle upward arc
+                                    velocityZ // velocityZ - forward direction
+                    );
+
                     if (itemHolder == null) {
                         dropResultFuture.complete(DropResult.failed("Failed to create item entity"));
                         return;
                     }
-                    
+
                     // Add NetworkId for client visibility
-                    itemHolder.addComponent(com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId.getComponentType(),
-                        new com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId(
-                            world.getEntityStore().getStore().getExternalData().takeNextNetworkId()));
-                    
+                    itemHolder.addComponent(
+                            com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId.getComponentType(),
+                            new com.hypixel.hytale.server.core.modules.entity.tracker.NetworkId(
+                                    world.getEntityStore().getStore().getExternalData().takeNextNetworkId()));
+
                     // Set pickup delay (1.5 seconds before NPC can pick it back up)
-                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = 
-                        (com.hypixel.hytale.server.core.modules.entity.item.ItemComponent) itemHolder.getComponent(
-                            com.hypixel.hytale.server.core.modules.entity.item.ItemComponent.getComponentType());
+                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent itemComp = (com.hypixel.hytale.server.core.modules.entity.item.ItemComponent) itemHolder
+                            .getComponent(
+                                    com.hypixel.hytale.server.core.modules.entity.item.ItemComponent
+                                            .getComponentType());
                     if (itemComp != null) {
                         itemComp.setPickupDelay(1.5f);
                     }
-                    
+
                     // Spawn the entity
-                    Ref<EntityStore> itemRef = world.getEntityStore().getStore().addEntity(itemHolder, com.hypixel.hytale.component.AddReason.SPAWN);
-                    
+                    Ref<EntityStore> itemRef = world.getEntityStore().getStore().addEntity(itemHolder,
+                            com.hypixel.hytale.component.AddReason.SPAWN);
+
                     if (itemRef == null || !itemRef.isValid()) {
                         dropResultFuture.complete(DropResult.failed("Failed to spawn item entity"));
                         return;
                     }
 
-                    logger.info("[Hycompanion] Dropped " + toDrop.getQuantity() + "x " + itemId + " for NPC " + npcInstanceId);
+                    logger.info("[Hycompanion] Dropped " + toDrop.getQuantity() + "x " + itemId + " for NPC "
+                            + npcInstanceId);
                     dropResultFuture.complete(DropResult.success(itemId, toDrop.getQuantity(), remainingQuantity));
                 } catch (Exception e) {
                     dropResultFuture.completeExceptionally(e);
@@ -5658,14 +6278,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                     // Build armor info
                     Map<String, Object> armor = new HashMap<>();
                     ItemContainer armorContainer = inventory.getArmor();
-                    String[] armorSlots = {"head", "chest", "hands", "legs"};
+                    String[] armorSlots = { "head", "chest", "hands", "legs" };
                     for (int i = 0; i < armorSlots.length && i < armorContainer.getCapacity(); i++) {
                         ItemStack stack = armorContainer.getItemStack((short) i);
                         if (stack != null && !stack.isEmpty()) {
                             armor.put(armorSlots[i], Map.of(
-                                "itemId", stack.getItem().getId(),
-                                "quantity", stack.getQuantity()
-                            ));
+                                    "itemId", stack.getItem().getId(),
+                                    "quantity", stack.getQuantity()));
                         } else if (includeEmpty) {
                             armor.put(armorSlots[i], null);
                         }
@@ -5716,20 +6335,21 @@ public class HytaleServerAdapter implements HytaleAPI {
                     ItemStack held = inventory.getItemInHand();
                     if (held != null && !held.isEmpty()) {
                         heldItem = Map.of(
-                            "itemId", held.getItem().getId(),
-                            "quantity", held.getQuantity()
-                        );
+                                "itemId", held.getItem().getId(),
+                                "quantity", held.getQuantity());
                     }
 
                     // Count total items
                     int totalItems = armor.size();
                     for (int i = 0; i < hotbarContainer.getCapacity(); i++) {
                         ItemStack stack = hotbarContainer.getItemStack((short) i);
-                        if (stack != null && !stack.isEmpty()) totalItems++;
+                        if (stack != null && !stack.isEmpty())
+                            totalItems++;
                     }
                     for (int i = 0; i < storageContainer.getCapacity(); i++) {
                         ItemStack stack = storageContainer.getItemStack((short) i);
-                        if (stack != null && !stack.isEmpty()) totalItems++;
+                        if (stack != null && !stack.isEmpty())
+                            totalItems++;
                     }
 
                     snapshotFuture.complete(InventorySnapshot.create(armor, hotbar, storage, heldItem, totalItems));
@@ -5795,9 +6415,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 removed = armor.getItemStack((short) armorSlot);
                                 if (removed != null && !removed.isEmpty()) {
                                     itemRemoved = Map.of(
-                                        "itemId", removed.getItem().getId(),
-                                        "quantity", removed.getQuantity()
-                                    );
+                                            "itemId", removed.getItem().getId(),
+                                            "quantity", removed.getQuantity());
                                     if (destroy) {
                                         armor.setItemStackForSlot((short) armorSlot, null);
                                     } else {
@@ -5819,9 +6438,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                             removed = hotbar.getItemStack((short) hotbarSlot);
                             if (removed != null && !removed.isEmpty()) {
                                 itemRemoved = Map.of(
-                                    "itemId", removed.getItem().getId(),
-                                    "quantity", removed.getQuantity()
-                                );
+                                        "itemId", removed.getItem().getId(),
+                                        "quantity", removed.getQuantity());
                                 if (destroy) {
                                     hotbar.setItemStackForSlot((short) hotbarSlot, null);
                                 } else {
@@ -5838,9 +6456,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                             removed = inventory.getItemInHand();
                             if (removed != null && !removed.isEmpty()) {
                                 itemRemoved = Map.of(
-                                    "itemId", removed.getItem().getId(),
-                                    "quantity", removed.getQuantity()
-                                );
+                                        "itemId", removed.getItem().getId(),
+                                        "quantity", removed.getQuantity());
                                 if (destroy) {
                                     // Can't directly clear held item, set active slot to empty
                                     int activeSlot = inventory.getActiveHotbarSlot();
@@ -5867,7 +6484,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                     }
 
                     logger.info("[Hycompanion] Unequipped item from " + slot + " for NPC " + npcInstanceId);
-                    
+
                     if (destroy) {
                         unequipResultFuture.complete(UnequipResult.destroyed(slot, itemRemoved));
                     } else {
@@ -5916,7 +6533,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                     // Set inventory size - this expands storage
                     // (hotbarCapacity, inventoryCapacity, offHandCapacity)
                     npcEntity.setInventorySize(9, storageSlots, 0);
-                    logger.info("[Hycompanion] Expanded inventory by " + storageSlots + " slots for NPC " + npcInstanceId);
+                    logger.info(
+                            "[Hycompanion] Expanded inventory by " + storageSlots + " slots for NPC " + npcInstanceId);
                     expandResultFuture.complete(true);
                 } catch (Exception e) {
                     expandResultFuture.completeExceptionally(e);
@@ -5931,4 +6549,3 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
 }
-
