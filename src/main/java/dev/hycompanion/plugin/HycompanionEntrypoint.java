@@ -10,7 +10,6 @@ import com.hypixel.hytale.server.core.event.events.player.AddPlayerToWorldEvent;
 import com.hypixel.hytale.server.core.event.events.player.PlayerChatEvent;
 import com.hypixel.hytale.server.core.event.events.player.PlayerDisconnectEvent;
 import com.hypixel.hytale.server.core.Message;
-import com.hypixel.hytale.server.core.entity.entities.Player;
 import com.hypixel.hytale.server.core.universe.PlayerRef;
 import dev.hycompanion.plugin.adapter.HytaleServerAdapter;
 import dev.hycompanion.plugin.api.HytaleAPI;
@@ -45,12 +44,12 @@ import java.util.Set;
  * when the plugin is loaded by a real Hytale server.
  * 
  * @author Hycompanion Team
- * @version 1.1.6
+ * @version 1.1.8
  */
 public class HycompanionEntrypoint extends JavaPlugin {
 
     private static final HytaleLogger HYTALE_LOGGER = HytaleLogger.forEnclosingClass();
-    public static final String VERSION = "1.1.6-SNAPSHOT";
+    public static final String VERSION = "1.1.8-SNAPSHOT";
 
     // Plugin components
     private PluginLogger logger;
@@ -584,12 +583,12 @@ public class HycompanionEntrypoint extends JavaPlugin {
 
                 // Get player location from their transform
                 com.hypixel.hytale.math.vector.Transform playerTransform = event.getSender().getTransform();
-                com.hypixel.hytale.math.vector.Vector3d playerPos = playerTransform.getPosition();
+                org.joml.Vector3d playerPos = playerTransform.getPosition();
 
                 dev.hycompanion.plugin.api.Location playerLocation = new dev.hycompanion.plugin.api.Location(
-                        playerPos.getX(),
-                        playerPos.getY(),
-                        playerPos.getZ(),
+                        playerPos.x(),
+                        playerPos.y(),
+                        playerPos.z(),
                         hytaleAPI.getWorldName());
 
                 // Create player object for chat handler
@@ -702,9 +701,10 @@ public class HycompanionEntrypoint extends JavaPlugin {
      */
     private void onPlayerAddedToWorld(AddPlayerToWorldEvent event) {
 
-        // Get Player entity component to check permissions
-        Player player = event.getHolder().getComponent(Player.getComponentType());
-        boolean isAdmin = player != null && (player.hasPermission("*") || player.hasPermission("hycompanion.admin"));
+        // Permissions / messaging live on PlayerRef in 0.5.6 (removed from Player)
+        PlayerRef playerRef = event.getHolder().getComponent(PlayerRef.getComponentType());
+        boolean isAdmin = playerRef != null
+                && (playerRef.hasPermission("*") || playerRef.hasPermission("hycompanion.admin"));
 
         // Check if API key is not set (null, empty, or default value)
         String apiKey = config.connection().apiKey();
@@ -715,26 +715,26 @@ public class HycompanionEntrypoint extends JavaPlugin {
             // permission)
             // Note: Hytale players implement PermissionHolder, but isOp() is not available
             // directly
-            player.sendMessage(
+            playerRef.sendMessage(
                     Message.raw("Hycompanion API key not set. Please use /hycompanion register [key] to set it.")
                             .color("#FF5555"));
-            player.sendMessage(Message.raw("You can get a key on https://app.hycompanion.dev")
+            playerRef.sendMessage(Message.raw("You can get a key on https://app.hycompanion.dev")
                     .color("#AAAAAA"));
         }
 
         // Check if manifest was created this session (restart required for NPC roles)
         if (roleGenerator != null && roleGenerator.isManifestCreatedThisSession() && isAdmin) {
-            player.sendMessage(Message.raw("").color("#FF5555"));
-            player.sendMessage(
+            playerRef.sendMessage(Message.raw("").color("#FF5555"));
+            playerRef.sendMessage(
                     Message.raw("[Hycompanion] SERVER RESTART REQUIRED!")
                             .color("#FF0000"));
-            player.sendMessage(
+            playerRef.sendMessage(
                     Message.raw("The asset pack manifest was just created.")
                             .color("#FF5555"));
-            player.sendMessage(
+            playerRef.sendMessage(
                     Message.raw("Please restart the server to enable NPC roles.")
                             .color("#FF5555"));
-            player.sendMessage(Message.raw("").color("#FF5555"));
+            playerRef.sendMessage(Message.raw("").color("#FF5555"));
         }
 
         // Validate existing NPCs and trigger rediscovery if needed

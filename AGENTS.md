@@ -183,6 +183,8 @@ The backend sends actions for the plugin to execute:
 | `move_to` | `{ x, y, z }` | Move NPC to location |
 | `follow_player` | `{ playerName }` | NPC follows player |
 | `attack` | `{ target, type }` | NPC attacks target |
+| `break_block` | `{ targetX, targetY, targetZ, toolItemId?, maxAttempts? }` | Break a block |
+| `place_block` | `{ targetX, targetY, targetZ, itemId }` | Place block from inventory |
 | `open_trade` | `{}` | Open trade interface |
 | `give_quest` | `{ questId, questName }` | Offer quest |
 

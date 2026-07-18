@@ -163,6 +163,7 @@ public class ActionExecutor {
                 // Inventory management actions
                 case "equip_item" -> executeEquipItem(npcInstanceData, params, ack);
                 case "break_block" -> executeBreakBlock(npcInstanceData, params, ack);
+                case "place_block" -> executePlaceBlock(npcInstanceData, params, ack);
                 case "pickup_item" -> executePickupItem(npcInstanceData, params, ack);
                 case "use_held_item" -> executeUseHeldItem(npcInstanceData, params, ack);
                 case "drop_item" -> executeDropItem(npcInstanceData, params, ack);
@@ -861,6 +862,54 @@ public class ActionExecutor {
         if (config.logging().logActions()) {
             logger.info("[NPC:" + npcInstanceId + "] break block at " + target + ": " +
                     (result.blockBroken() ? "BROKEN" : "FAILED"));
+        }
+    }
+
+    /**
+     * PLACE_BLOCK - Place a block from inventory at target coordinates
+     */
+    private void executePlaceBlock(NpcInstanceData npcInstanceData, JSONObject params, io.socket.client.Ack ack) {
+        if (npcInstanceData == null) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"NPC data missing\"}");
+            return;
+        }
+        UUID npcInstanceId = npcInstanceData.entityUuid();
+
+        if (params == null) {
+            logger.warn("Place block action without params for NPC: " + npcInstanceId);
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"Missing parameters\"}");
+            return;
+        }
+
+        double x = params.optDouble("targetX");
+        double y = params.optDouble("targetY");
+        double z = params.optDouble("targetZ");
+        String itemId = params.optString("itemId", null);
+
+        if (itemId == null || itemId.isEmpty()) {
+            if (ack != null)
+                ack.call("{\"success\": false, \"error\": \"Missing itemId\"}");
+            return;
+        }
+
+        Location target = Location.of(x, y, z);
+        var result = hytaleAPI.placeBlock(npcInstanceId, target, itemId);
+
+        if (ack != null) {
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("success", result.success());
+            json.put("blockId", result.blockId() != null ? result.blockId() : org.json.JSONObject.NULL);
+            json.put("itemId", result.itemId() != null ? result.itemId() : org.json.JSONObject.NULL);
+            json.put("remainingQuantity", result.remainingQuantity());
+            json.put("error", result.error() != null ? result.error() : org.json.JSONObject.NULL);
+            ack.call(json.toString());
+        }
+
+        if (config.logging().logActions()) {
+            logger.info("[NPC:" + npcInstanceId + "] place block " + itemId + " at " + target + ": " +
+                    (result.success() ? "SUCCESS" : "FAILED"));
         }
     }
 

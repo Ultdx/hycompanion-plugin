@@ -17,8 +17,7 @@ if exist ".env" (
     echo [INFO] Loading environment from .env file...
     for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
         :: Skip comments and empty lines
-        echo %%a | findstr /b "#" >nul && continue
-        if not "%%a"=="" (
+        if not "%%a"=="" if not "%%a:~0,1%%"=="#" (
             set "%%a=%%b"
         )
     )
@@ -81,7 +80,7 @@ echo ========================================
 echo   BUILD SUCCESSFUL!
 echo ========================================
 echo.
-echo Output: target\hycompanion-plugin-1.1.3-SNAPSHOT-jar-with-dependencies.jar
+echo Output: target\hycompanion-plugin-*-jar-with-dependencies.jar
 echo.
 
 :: Check if called from another script (skip pause)

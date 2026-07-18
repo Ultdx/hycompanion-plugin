@@ -2,7 +2,7 @@ package dev.hycompanion.plugin.commands;
 
 import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.component.Store;
-import com.hypixel.hytale.math.vector.Vector3d;
+import org.joml.Vector3d;
 import com.hypixel.hytale.server.core.Message;
 import com.hypixel.hytale.server.core.command.system.CommandContext;
 import com.hypixel.hytale.server.core.command.system.arguments.system.RequiredArg;
@@ -306,9 +306,9 @@ public class HycompanionCommand extends AbstractCommandCollection {
             Vector3d playerPos = playerRef.getTransform().getPosition();
 
             Location spawnLocation = new Location(
-                    playerPos.getX(),
-                    playerPos.getY(),
-                    playerPos.getZ(),
+                    playerPos.x(),
+                    playerPos.y(),
+                    playerPos.z(),
                     world.getName());
 
             context.sendMessage(colored("Spawning NPC '" + npc.name() + "' at your location...", COLOR_YELLOW));
@@ -362,7 +362,7 @@ public class HycompanionCommand extends AbstractCommandCollection {
                 // Find nearest NPC by external ID
                 Vector3d playerPos = playerRef.getTransform().getPosition();
                 Location playerLocation = new Location(
-                        playerPos.getX(), playerPos.getY(), playerPos.getZ(), world.getName());
+                        playerPos.x(), playerPos.y(), playerPos.z(), world.getName());
 
                 var nearestOpt = getNpcManager().findNearestSpawnedNpcByExternalId(nearestExternalId, playerLocation);
 
@@ -469,9 +469,9 @@ public class HycompanionCommand extends AbstractCommandCollection {
             // Get player position
             Vector3d playerPos = playerRef.getTransform().getPosition();
             Location targetLocation = new Location(
-                    playerPos.getX(),
-                    playerPos.getY(),
-                    playerPos.getZ(),
+                    playerPos.x(),
+                    playerPos.y(),
+                    playerPos.z(),
                     world.getName());
 
             context.sendMessage(colored("Teleporting NPC '" + npcInstance.npcData().name() + "' to your location...", COLOR_YELLOW));

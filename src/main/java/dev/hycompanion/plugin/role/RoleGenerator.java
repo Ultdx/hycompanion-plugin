@@ -45,7 +45,8 @@ public class RoleGenerator {
     public void ensureModManifest() {
         Path manifestPath = modDirectory.resolve("manifest.json");
         try {
-            String targetServerVersion = resolveServerVersionFromPluginManifest();
+            String targetServerVersion = resolveManifestFieldFromPluginManifest("ServerVersion", "*");
+            String pluginVersion = resolveManifestFieldFromPluginManifest("Version", "1.1.0");
 
             JsonObject manifestJson;
             boolean created = false;
@@ -66,7 +67,7 @@ public class RoleGenerator {
             manifestJson.addProperty("Group", "dev.hycompanion");
             manifestJson.addProperty("Name", "Hycompanion");
             if (!manifestJson.has("Version") || manifestJson.get("Version").isJsonNull()) {
-                manifestJson.addProperty("Version", "1.1.6");
+                manifestJson.addProperty("Version", pluginVersion);
             }
             if (!manifestJson.has("Description") || manifestJson.get("Description").isJsonNull()) {
                 manifestJson.addProperty("Description", "Hycompanion dynamic NPC role assets");
@@ -91,17 +92,17 @@ public class RoleGenerator {
         }
     }
 
-    private String resolveServerVersionFromPluginManifest() {
+    private String resolveManifestFieldFromPluginManifest(String fieldName, String defaultValue) {
         try (var in = RoleGenerator.class.getClassLoader().getResourceAsStream("manifest.json")) {
             if (in == null) {
-                return "*";
+                return defaultValue;
             }
             String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             JsonElement parsed = GSON.fromJson(content, JsonElement.class);
             if (parsed != null && parsed.isJsonObject()) {
                 JsonObject json = parsed.getAsJsonObject();
-                if (json.has("ServerVersion") && !json.get("ServerVersion").isJsonNull()) {
-                    String value = json.get("ServerVersion").getAsString();
+                if (json.has(fieldName) && !json.get(fieldName).isJsonNull()) {
+                    String value = json.get(fieldName).getAsString();
                     if (value != null && !value.isBlank()) {
                         return value;
                     }
@@ -110,7 +111,7 @@ public class RoleGenerator {
         } catch (Exception ignored) {
             // Keep default fallback if resource cannot be parsed.
         }
-        return "*";
+        return defaultValue;
     }
 
     /**
@@ -212,7 +213,7 @@ public class RoleGenerator {
                 try {
                     payload.put("apiKey", apiKey);
                     var serverInfo = new org.json.JSONObject();
-                    serverInfo.put("version", "1.1.6-SNAPSHOT");
+                    serverInfo.put("version", "1.1.8-SNAPSHOT");
                     serverInfo.put("playerCount", 0);
                     payload.put("serverInfo", serverInfo);
                 } catch (Exception e) {
@@ -488,52 +489,9 @@ public class RoleGenerator {
             role.addProperty("CollisionRadius", -1);
         }
 
-        // MotionControllerList
-        com.google.gson.JsonArray motionControllers = new com.google.gson.JsonArray();
-
-        // Use custom motion controllers if defined, otherwise default
-        if (npc.motionControllerList != null && npc.motionControllerList.length() > 0) {
-            // Need to convert org.json.JSONArray to Gson JsonArray
-            for (int i = 0; i < npc.motionControllerList.length(); i++) {
-                org.json.JSONObject mc = npc.motionControllerList.getJSONObject(i);
-                JsonObject gsonMc = new JsonObject();
-                for (String key : mc.keySet()) {
-                    addValueToJsonObject(gsonMc, key, mc.get(key));
-                }
-                motionControllers.add(gsonMc);
-            }
-        } else if (npc.motionControllers != null && !npc.motionControllers.isEmpty()) {
-            // Legacy format support
-            Iterator<String> keys = npc.motionControllers.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                org.json.JSONObject mc = npc.motionControllers.getJSONObject(key);
-                JsonObject gsonMc = new JsonObject();
-                // Add defaults if missing
-                if (!mc.has("Type"))
-                    gsonMc.addProperty("Type", "Walk");
-
-                for (String subKey : mc.keySet()) {
-                    addValueToJsonObject(gsonMc, subKey, mc.get(subKey));
-                }
-                motionControllers.add(gsonMc);
-            }
-        } else {
-            // Default Walk Controller
-            JsonObject walkController = new JsonObject();
-            walkController.addProperty("Type", "Walk");
-
-            // Get MaxSpeed from parameters or use default
-            Double maxSpeed = getParameterDoubleValue(npc.parameters, "MaxSpeed", 5.0);
-            walkController.addProperty("MaxWalkSpeed", maxSpeed);
-            walkController.addProperty("Acceleration", 25);
-            walkController.addProperty("MaxRotationSpeed", 180);
-            walkController.addProperty("MinJumpHeight", 1.2);
-            walkController.addProperty("Gravity", 10);
-            walkController.addProperty("MaxFallSpeed", 15);
-            motionControllers.add(walkController);
-        }
-        role.add("MotionControllerList", motionControllers);
+        // MotionControllerList — Hytale expects PascalCase keys (MaxWalkSpeed, etc.).
+        // Backend stores camelCase (maxSpeed, type); never pass those through raw.
+        role.add("MotionControllerList", buildMotionControllerList(npc));
 
         // Get FollowDistance from parameters or use default
         Double followDistance = getParameterDoubleValue(npc.parameters, "FollowDistance", 2.0);
@@ -938,104 +896,7 @@ public class RoleGenerator {
         if (npc.spawnViewDistance != null)
             role.addProperty("SpawnViewDistance", npc.spawnViewDistance);
 
-        // Motion Controller List
-        com.google.gson.JsonArray motionControllers = new com.google.gson.JsonArray();
-
-        if (npc.motionControllers != null && !npc.motionControllers.isEmpty()) {
-            Iterator<String> keys = npc.motionControllers.keys();
-            while (keys.hasNext()) {
-                String key = keys.next();
-                org.json.JSONObject controllerData = npc.motionControllers.getJSONObject(key);
-                JsonObject controller = new JsonObject();
-
-                // Determine Type
-                String type = "Walk"; // Default
-                if (controllerData.has("type")) {
-                    type = controllerData.getString("type");
-                } else if (key.equalsIgnoreCase("walk") || key.equalsIgnoreCase("run")
-                        || key.equalsIgnoreCase("sprint")) {
-                    type = "Walk";
-                } else if (key.equalsIgnoreCase("fly")) {
-                    type = "Fly";
-                } else if (key.equalsIgnoreCase("swim") || key.equalsIgnoreCase("dive")) {
-                    type = "Dive"; // "Dive" is the Hytale type for swimming
-                }
-
-                controller.addProperty("Type", type);
-
-                // Common Properties
-                if (controllerData.has("acceleration"))
-                    controller.addProperty("Acceleration", controllerData.getDouble("acceleration"));
-
-                if (controllerData.has("maxRotationSpeed"))
-                    controller.addProperty("MaxRotationSpeed", controllerData.getDouble("maxRotationSpeed"));
-                else if (controllerData.has("turnSpeed"))
-                    controller.addProperty("MaxRotationSpeed", controllerData.getDouble("turnSpeed"));
-
-                // Type Specific Properties
-                switch (type) {
-                    case "Walk":
-                        if (controllerData.has("maxSpeed"))
-                            controller.addProperty("MaxWalkSpeed", controllerData.getDouble("maxSpeed"));
-                        else if (controllerData.has("maxWalkSpeed"))
-                            controller.addProperty("MaxWalkSpeed", controllerData.getDouble("maxWalkSpeed"));
-
-                        // Let's use MinJumpHeight if JumpHeight is provided
-                        if (controllerData.has("jumpHeight"))
-                            controller.addProperty("MinJumpHeight", controllerData.getDouble("jumpHeight"));
-
-                        // Gravity
-                        controller.addProperty("Gravity", 10.0);
-                        controller.addProperty("MaxFallSpeed", 15.0);
-                        break;
-
-                    case "Fly":
-                        // "MaxHorizontalSpeed": 20, "MaxClimbSpeed": 10
-                        if (controllerData.has("maxSpeed")) {
-                            controller.addProperty("MaxHorizontalSpeed", controllerData.getDouble("maxSpeed"));
-                            controller.addProperty("MaxClimbSpeed", controllerData.getDouble("maxSpeed") / 2.0); // Rough
-                                                                                                                 // estimate
-                        }
-                        // Default Fallbacks
-                        if (!controller.has("MaxHorizontalSpeed"))
-                            controller.addProperty("MaxHorizontalSpeed", 10.0);
-                        if (!controller.has("MaxClimbSpeed"))
-                            controller.addProperty("MaxClimbSpeed", 5.0);
-                        controller.addProperty("MaxSinkSpeed", 3.0);
-                        controller.addProperty("MinAirSpeed", 0.0); // Allow hovering by default
-                        break;
-
-                    case "Dive": // Swimming
-                        // "MaxSwimSpeed": 10, "MaxDiveSpeed": 8
-                        if (controllerData.has("maxSpeed")) {
-                            controller.addProperty("MaxSwimSpeed", controllerData.getDouble("maxSpeed"));
-                            controller.addProperty("MaxDiveSpeed", controllerData.getDouble("maxSpeed") * 0.8);
-                        }
-                        if (!controller.has("MaxSwimSpeed"))
-                            controller.addProperty("MaxSwimSpeed", 5.0);
-                        controller.addProperty("Gravity", 10.0);
-                        break;
-
-                    default:
-                        if (controllerData.has("maxSpeed"))
-                            controller.addProperty("MaxSpeed", controllerData.getDouble("maxSpeed"));
-                        break;
-                }
-
-                motionControllers.add(controller);
-            }
-        } else {
-            // Default fallback
-            JsonObject walkController = new JsonObject();
-            walkController.addProperty("Type", "Walk");
-            walkController.addProperty("MaxWalkSpeed", 5.0);
-            walkController.addProperty("Acceleration", 25.0);
-            walkController.addProperty("MaxRotationSpeed", 180.0);
-            walkController.addProperty("MinJumpHeight", 1.2);
-            motionControllers.add(walkController);
-        }
-
-        role.add("MotionControllerList", motionControllers);
+        role.add("MotionControllerList", buildMotionControllerList(npc));
 
         // Instructions (Behaviors)
         // Generate based on behavior presets array
@@ -1556,6 +1417,127 @@ public class RoleGenerator {
     // ============================================================================
     // HELPER METHODS
     // ============================================================================
+
+    /**
+     * Build MotionControllerList in Hytale's PascalCase schema.
+     * Backend API uses camelCase ({@code type}, {@code maxSpeed}, …); those keys are
+     * rejected as unknown attributes by NPC builders on 0.5.6+.
+     */
+    private com.google.gson.JsonArray buildMotionControllerList(NpcRoleData npc) {
+        com.google.gson.JsonArray motionControllers = new com.google.gson.JsonArray();
+
+        if (npc.motionControllerList != null && npc.motionControllerList.length() > 0) {
+            for (int i = 0; i < npc.motionControllerList.length(); i++) {
+                motionControllers.add(toHytaleMotionController(npc.motionControllerList.getJSONObject(i), null));
+            }
+            return motionControllers;
+        }
+
+        if (npc.motionControllers != null && !npc.motionControllers.isEmpty()) {
+            Iterator<String> keys = npc.motionControllers.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                motionControllers.add(toHytaleMotionController(npc.motionControllers.getJSONObject(key), key));
+            }
+            return motionControllers;
+        }
+
+        JsonObject walkController = new JsonObject();
+        walkController.addProperty("Type", "Walk");
+        Double maxSpeed = getParameterDoubleValue(npc.parameters, "MaxSpeed", 5.0);
+        walkController.addProperty("MaxWalkSpeed", maxSpeed != null ? maxSpeed : 5.0);
+        walkController.addProperty("Acceleration", 25.0);
+        walkController.addProperty("MaxRotationSpeed", 180.0);
+        walkController.addProperty("MinJumpHeight", 1.2);
+        walkController.addProperty("Gravity", 10.0);
+        walkController.addProperty("MaxFallSpeed", 15.0);
+        motionControllers.add(walkController);
+        return motionControllers;
+    }
+
+    /**
+     * Map one backend / legacy motion-controller object to Hytale Walk/Fly/Dive JSON.
+     */
+    private JsonObject toHytaleMotionController(org.json.JSONObject controllerData, String fallbackKey) {
+        JsonObject controller = new JsonObject();
+
+        String type = "Walk";
+        if (controllerData.has("Type") && !controllerData.isNull("Type")) {
+            type = controllerData.getString("Type");
+        } else if (controllerData.has("type") && !controllerData.isNull("type")) {
+            type = controllerData.getString("type");
+        } else if (fallbackKey != null) {
+            if (fallbackKey.equalsIgnoreCase("fly")) {
+                type = "Fly";
+            } else if (fallbackKey.equalsIgnoreCase("swim") || fallbackKey.equalsIgnoreCase("dive")) {
+                type = "Dive";
+            } else if (fallbackKey.equalsIgnoreCase("climb")) {
+                // No dedicated Climb controller — Walk supports climb height params.
+                type = "Walk";
+            }
+        }
+
+        // Backend naming → Hytale controller types
+        if ("Swim".equalsIgnoreCase(type)) {
+            type = "Dive";
+        } else if ("Climb".equalsIgnoreCase(type)) {
+            type = "Walk";
+        }
+
+        controller.addProperty("Type", type);
+
+        double acceleration = controllerData.has("Acceleration") ? controllerData.getDouble("Acceleration")
+                : controllerData.has("acceleration") ? controllerData.getDouble("acceleration") : 25.0;
+        controller.addProperty("Acceleration", acceleration);
+
+        double rotationSpeed = controllerData.has("MaxRotationSpeed") ? controllerData.getDouble("MaxRotationSpeed")
+                : controllerData.has("maxRotationSpeed") ? controllerData.getDouble("maxRotationSpeed")
+                        : controllerData.has("turnSpeed") ? controllerData.getDouble("turnSpeed") : 180.0;
+        controller.addProperty("MaxRotationSpeed", rotationSpeed);
+
+        switch (type) {
+            case "Fly" -> {
+                double maxSpeed = readMaxSpeed(controllerData, 10.0);
+                controller.addProperty("MaxHorizontalSpeed", maxSpeed);
+                controller.addProperty("MaxClimbSpeed", maxSpeed / 2.0);
+                controller.addProperty("MaxSinkSpeed", 3.0);
+                controller.addProperty("MinAirSpeed", 0.0);
+            }
+            case "Dive" -> {
+                double maxSpeed = readMaxSpeed(controllerData, 5.0);
+                controller.addProperty("MaxSwimSpeed", maxSpeed);
+                controller.addProperty("MaxDiveSpeed", maxSpeed * 0.8);
+                controller.addProperty("Gravity", 10.0);
+            }
+            default -> {
+                // Walk (and Climb mapped to Walk)
+                double maxSpeed = readMaxSpeed(controllerData, 5.0);
+                controller.addProperty("MaxWalkSpeed", maxSpeed);
+                double jumpHeight = controllerData.has("MinJumpHeight") ? controllerData.getDouble("MinJumpHeight")
+                        : controllerData.has("jumpHeight") ? controllerData.getDouble("jumpHeight")
+                                : controllerData.has("JumpHeight") ? controllerData.getDouble("JumpHeight") : 1.2;
+                controller.addProperty("MinJumpHeight", jumpHeight);
+                controller.addProperty("Gravity", 10.0);
+                controller.addProperty("MaxFallSpeed", 15.0);
+            }
+        }
+
+        return controller;
+    }
+
+    private double readMaxSpeed(org.json.JSONObject controllerData, double defaultValue) {
+        if (controllerData.has("MaxWalkSpeed"))
+            return controllerData.getDouble("MaxWalkSpeed");
+        if (controllerData.has("maxWalkSpeed"))
+            return controllerData.getDouble("maxWalkSpeed");
+        if (controllerData.has("MaxHorizontalSpeed"))
+            return controllerData.getDouble("MaxHorizontalSpeed");
+        if (controllerData.has("maxSpeed"))
+            return controllerData.getDouble("maxSpeed");
+        if (controllerData.has("MaxSpeed"))
+            return controllerData.getDouble("MaxSpeed");
+        return defaultValue;
+    }
 
     /**
      * Add a value of any type to a JsonObject.

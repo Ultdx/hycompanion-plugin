@@ -466,6 +466,16 @@ public interface HytaleAPI {
         BreakResult breakBlock(UUID npcInstanceId, Location targetBlock, String toolItemId, int maxAttempts);
 
         /**
+         * Place a block from the NPC inventory at the target location
+         *
+         * @param npcInstanceId The instance ID of the NPC
+         * @param targetBlock   The empty block location to place into
+         * @param itemId        Placeable block item ID from inventory
+         * @return Result of the place operation
+         */
+        PlaceResult placeBlock(UUID npcInstanceId, Location targetBlock, String itemId);
+
+        /**
          * Pick up dropped items near the NPC
          * 
          * @param npcInstanceId The instance ID of the NPC

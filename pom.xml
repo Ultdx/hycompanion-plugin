@@ -6,7 +6,7 @@
 
     <groupId>dev.hycompanion</groupId>
     <artifactId>hycompanion-plugin</artifactId>
-    <version>1.1.6</version>
+    <version>1.1.8</version>
     <packaging>jar</packaging>
 
     <name>Hycompanion Plugin</name>
@@ -26,7 +26,9 @@
         <gson.version>2.10.1</gson.version>
         <slf4j.version>2.0.9</slf4j.version>
         <junit.version>5.10.1</junit.version>
-        <hytale.server.version>2026.02.17-255364b8e</hytale.server.version>
+        <hytale.server.version>0.5.6</hytale.server.version>
+        <!-- Manifest ServerVersion must be a SemverRange (bare x.y.z only valid when patch is 0) -->
+        <hytale.server.version.range>=0.5.6</hytale.server.version.range>
     </properties>
 
     

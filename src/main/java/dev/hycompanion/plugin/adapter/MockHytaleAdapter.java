@@ -460,6 +460,12 @@ public class MockHytaleAdapter implements HytaleAPI {
     }
 
     @Override
+    public PlaceResult placeBlock(UUID npcInstanceId, Location targetBlock, String itemId) {
+        logger.info("[MOCK] Placing block " + itemId + " at " + targetBlock + " for NPC " + npcInstanceId);
+        return PlaceResult.success(itemId, itemId, 7);
+    }
+
+    @Override
     public PickupResult pickupItems(UUID npcInstanceId, double radius, String itemId, int maxItems) {
         logger.info("[MOCK] Picking up items within " + radius + " blocks for NPC " + npcInstanceId);
         List<Map<String, Object>> items = List.of(
