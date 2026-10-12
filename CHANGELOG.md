@@ -14,6 +14,9 @@
 
 ### Fixed
 
+- Restore nearby block, mushroom, fluid and container detection in partially loaded columns: check the individual section instead of `hasLoadedSections`, which requires more than 10 loaded sections in Hytale 0.7.0.
+- Respect the world's supported Y coordinates during scans, including blocks above Y=255 and negative coordinates in cubic worlds.
+- Report unavailable block/entity scans as errors instead of treating them as an empty area.
 - Adapt block damage calls to the new impact entity and explosion parameters.
 - Access live container components so inventory transfers update the actual block inventory.
 - Include the `PlaceResult` record required by the existing block placement API.
@@ -26,4 +29,5 @@
 - `compile-plugin.bat --skip-sentry` and `mvn -o clean verify -Dsentry.skip=true` succeeded.
 - Verified the packaged manifest, server compatibility range and loading of all 72 plugin classes against the official server API.
 - Regression tests cover upgrading an old asset pack manifest, preserving custom metadata and role files, and creating a manifest on first startup.
+- Verified the scan availability and supported height semantics against the official 0.7.0 server bytecode; backend regression tests cover mushrooms, chests, dropped items and scan failures.
 - In-game validation is still pending.

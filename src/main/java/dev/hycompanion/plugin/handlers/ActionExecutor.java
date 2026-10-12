@@ -240,7 +240,7 @@ public class ActionExecutor {
             if (result.isPresent()) {
                 ack.call(new JSONObject(result.get()).toString());
             } else {
-                ack.call("{\"blocks\": {}, \"radius\": " + radius + ", \"totalUniqueBlocks\": 0}");
+                ack.call("{\"error\": \"Block scan unavailable; surroundings could not be checked\"}");
             }
         }).exceptionally(e -> {
             logger.error("Error scanning blocks: " + e.getMessage());
@@ -263,7 +263,7 @@ public class ActionExecutor {
             if (result.isPresent()) {
                 ack.call(new JSONObject(result.get()).toString());
             } else {
-                ack.call("{\"entities\": [], \"radius\": " + radius + ", \"totalEntities\": 0}");
+                ack.call("{\"error\": \"Entity scan unavailable; surroundings could not be checked\"}");
             }
         }).exceptionally(e -> {
             logger.error("Error scanning entities: " + e.getMessage());

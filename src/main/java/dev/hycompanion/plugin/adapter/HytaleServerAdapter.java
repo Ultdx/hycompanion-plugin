@@ -1608,14 +1608,10 @@ public class HytaleServerAdapter implements HytaleAPI {
                     int x = com.hypixel.hytale.math.util.MathUtil.unpackLeft(packedPos);
                     int z = com.hypixel.hytale.math.util.MathUtil.unpackRight(packedPos);
 
-                    // Optimization: Check if chunk is loaded first
-                    if (!world.getChunkStore().hasLoadedSections(
-                            com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z)))
-                        continue;
-
-                    // Scan Y range (NPC height +/- 10 blocks)
-                    for (int y = Math.max(0, startY - 10); y <= Math.min(255, startY + 10); y++) {
-                        if (!blockReader.hasStorageInMemory(x, y, z))
+                    // Check each section, not the whole column: hasLoadedSections requires >10
+                    // loaded sections in 0.7.0 and can reject readable blocks near the NPC.
+                    for (int y = startY - 10; y <= startY + 10; y++) {
+                        if (!blockReader.canHoldY(y) || !blockReader.hasStorageInMemory(x, y, z))
                             continue;
                         int blockId = blockReader.getBlock(x, y, z);
                         if (targetBlockIds.contains(blockId)) {
@@ -1730,14 +1726,10 @@ public class HytaleServerAdapter implements HytaleAPI {
                     int x = com.hypixel.hytale.math.util.MathUtil.unpackLeft(packedPos);
                     int z = com.hypixel.hytale.math.util.MathUtil.unpackRight(packedPos);
 
-                    // Optimization: Check if chunk is loaded first
-                    if (!world.getChunkStore().hasLoadedSections(
-                            com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z)))
-                        continue;
-
-                    // Scan Y range (NPC height +/- 10 blocks)
-                    for (int y = Math.max(0, startY - 10); y <= Math.min(255, startY + 10); y++) {
-                        if (!blockReader.hasStorageInMemory(x, y, z))
+                    // Availability is per section; a partially loaded column is still readable.
+                    // Let the reader enforce the world's height limits, including cubic worlds.
+                    for (int y = startY - 10; y <= startY + 10; y++) {
+                        if (!blockReader.canHoldY(y) || !blockReader.hasStorageInMemory(x, y, z))
                             continue;
                         // Calculate exact distance to voxel center (shared by block + fluid scanning)
                         double voxelCenterX = x + 0.5;
