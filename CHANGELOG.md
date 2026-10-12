@@ -14,6 +14,9 @@
 
 ### Fixed
 
+- Keep each movement's marker, monitor and pending result together. Replacement, player following, stopping, NPC removal, teleportation and shutdown now interrupt the movement explicitly; queued callbacks cannot clean up a newer command.
+- Restore compatibility with cached or inherited roles that expose `Follow` without the new `Move` state. Arrival still requires the observed position to be within 1.5 blocks; reload generated roles for the precise 1-block stopping distance.
+- Resolve player follow and stop commands in the NPC's current world, matching coordinate movement even when cached spawn metadata is stale.
 - Fix coordinate movement by using a stationary, intangible server-side target with an explicit bounding box instead of an asset-dependent projectile marker. Resolve the NPC's current world from its entity store.
 - Give explicit `move_to` commands their own `Move` behavior with a 1-block stopping distance, independent of the configured player follow distance and available idle/follow/wander presets.
 - Remove the false arrival shortcut for NPCs stuck within 5 blocks. Report success only within 1.5 blocks of the requested destination, with the actual position, remaining distance and arrival tolerance.
@@ -33,6 +36,7 @@
 - `compile-plugin.bat --skip-sentry` and `mvn -o clean verify -Dsentry.skip=true` succeeded.
 - Verified the packaged manifest, server compatibility range and loading of all 72 plugin classes against the official server API.
 - Regression tests cover upgrading an old asset pack manifest, preserving custom metadata and role files, and creating a manifest on first startup.
-- `mvn -o verify -Dsentry.skip=true` passed all 11 tests and rebuilt the Hytale JAR. Movement tests replay the stationary positions from the mushroom-gathering logs and check real progress, stalls, vertical distance, and independence from player follow distance.
+- `mvn -o verify -Dsentry.skip=true` passed all 17 tests and rebuilt the Hytale JAR. Movement tests replay the stationary positions from the mushroom-gathering logs and check progress, stalls, vertical distance, independence from player follow distance, legacy state selection, interruption, late resource registration and cleanup before completion callbacks.
+- Compared nine key movement/state/target classes byte-for-byte between the supplied pre-release JAR and the official 0.7.0 JAR; all nine match. Full official source review remains pending the new extraction.
 - Verified the scan availability and supported height semantics against the official 0.7.0 server bytecode; backend regression tests cover mushrooms, chests, dropped items and scan failures.
 - In-game validation is still pending.

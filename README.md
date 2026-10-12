@@ -96,6 +96,8 @@ If `AssetModule` still reports a target of `=0.5.6`, check the dynamic role pack
 
 After updating coordinate movement, synchronize NPC roles with `/hycompanion sync` and restart the server to load the generated `MoveBehavior`. Keep the existing configuration and role pack folder to preserve your key. If an existing NPC reports `movement_role_unavailable`, respawn it after loading the updated role. `move_to` now confirms arrival only within 1.5 blocks of the requested position; blocked paths return a failure and the actual NPC position.
 
+Cached or inherited roles that only expose `Follow` retain that movement behavior. Their configured follow distance can stop the NPC outside the arrival tolerance; reload generated roles for precise coordinate movement. Switching commands interrupts the pending move explicitly, and previous callbacks do not reset a later movement or player follow target.
+
 ### 3. Install
 
 1. Copy the JAR to your Hytale server's `plugins/` folder

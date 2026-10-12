@@ -70,6 +70,7 @@ import dev.hycompanion.plugin.core.npc.NpcData;
 import dev.hycompanion.plugin.core.npc.NpcInstanceData;
 import dev.hycompanion.plugin.core.npc.NpcMoveResult;
 import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
+import dev.hycompanion.plugin.core.npc.NpcMovementSession;
 import dev.hycompanion.plugin.integration.PluginIntegrationManager;
 import dev.hycompanion.plugin.integration.SpeechBubbleIntegration;
 import dev.hycompanion.plugin.network.PacketDispatchUtil;
@@ -122,11 +123,9 @@ public class HytaleServerAdapter implements HytaleAPI {
             });
     private final Map<UUID, ScheduledFuture<?>> rotationTasks = new ConcurrentHashMap<>();
 
-    // Track NPC movement monitoring tasks
-    private final Map<UUID, ScheduledFuture<?>> movementTasks = new ConcurrentHashMap<>();
-
-    // Track invisible target entities for move_to
-    private final Map<UUID, Ref<EntityStore>> movementTargetEntities = new ConcurrentHashMap<>();
+    // Each request owns its marker, monitor and completion result.
+    private final Map<UUID, NpcMovementSession<Ref<EntityStore>>> movementSessions = new ConcurrentHashMap<>();
+    private boolean movementsClosed;
 
     // Thinking indicator animation tasks per NPC
     private final Map<UUID, ScheduledFuture<?>> thinkingAnimationTasks = new ConcurrentHashMap<>();
@@ -650,6 +649,8 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public boolean removeNpc(UUID npcInstanceId) {
+        cleanupMovement(npcInstanceId);
+        busyNpcs.remove(npcInstanceId);
         logger.info("[Hycompanion] Removing NPC [" + npcInstanceId + "]");
 
         // Get instance data first (before removing)
@@ -1135,248 +1136,165 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
     @Override
-    public CompletableFuture<NpcMoveResult> moveNpcTo(UUID npcInstanceId,
-            Location location) {
-        CompletableFuture<NpcMoveResult> result = new CompletableFuture<>();
+    public CompletableFuture<NpcMoveResult> moveNpcTo(UUID npcInstanceId, Location location) {
+        NpcMovementSession<Ref<EntityStore>> session = new NpcMovementSession<>(this::removeEntity);
+        NpcMovementSession<Ref<EntityStore>> previous;
+        synchronized (movementSessions) {
+            if (movementsClosed || isShuttingDown()) {
+                session.finish(NpcMoveResult.failed("shutdown"));
+                return session.result();
+            }
+            previous = movementSessions.put(npcInstanceId, session);
+        }
+        if (previous != null) cancelMovementSession(npcInstanceId, previous);
         logger.info("[Hycompanion] NPC [" + npcInstanceId + "] moving to " + location);
 
-        // Cancel previous tasks
-        cleanupMovement(npcInstanceId);
-
-        NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
-        if (npcInstanceData == null) {
-            logger.error("[Hycompanion] Cannot move NPC - entity not tracked for NPC: " + npcInstanceId);
-            result.complete(NpcMoveResult.failed("entity_not_tracked"));
-            return result;
+        NpcInstanceData instance = npcInstanceEntities.get(npcInstanceId);
+        Ref<EntityStore> entityRef = instance != null ? instance.entityRef() : null;
+        if (entityRef == null || !entityRef.isValid()) {
+            finishMovement(npcInstanceId, session, NpcMoveResult.failed("entity_ref_invalid"));
+            return session.result();
         }
-
-        Ref<EntityStore> entityRef = npcInstanceData.entityRef();
-        if (entityRef != null && entityRef.isValid()) {
-            try {
-                Store<EntityStore> store = entityRef.getStore();
-
-                World resolvedWorld = store.getExternalData().getWorld();
-
-                if (resolvedWorld != null) {
-                    final World world = resolvedWorld;
-                    world.execute(() -> {
-                        try {
-                            // A stationary server-only marker: no projectile asset, physics, or client model.
-                            // Seek requires a BoundingBox even for an intangible target.
-                            Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
-
-                            Vector3d pos = new Vector3d(location.x(), location.y(), location.z());
-                            holder.putComponent(TransformComponent.getComponentType(),
-                                    new TransformComponent(pos, Rotation3f.ZERO));
-
-                            holder.ensureComponent(UUIDComponent.getComponentType());
-                            holder.putComponent(BoundingBox.getComponentType(),
-                                    new BoundingBox(Box.horizontallyCentered(0.1, 0.1, 0.1)));
-
-                            // Keep it intangible so NPC doesn't collide
-                            holder.ensureComponent(Intangible.getComponentType());
-
-                            Ref<EntityStore> targetRef = store.addEntity(holder, AddReason.SPAWN);
-
-                            if (targetRef != null && targetRef.isValid()) {
-                                movementTargetEntities.put(npcInstanceId, targetRef);
-
-                                NPCEntity npcEntity = store.getComponent(entityRef, NPCEntity.getComponentType());
-                                if (npcEntity != null) {
-                                    var role = npcEntity.getRole();
-                                    if (role != null) {
-                                        // 2. Reset animations/posture and clear any existing follow target/state.
-                                        npcInstanceData.resetAnimationsAndPosture(store, "moveNpcTo");
-                                        try {
-                                            MarkedEntitySupport.get(entityRef, store)
-                                                    .setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
-                                            StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
-                                        } catch (Exception e) {
-                                            try {
-                                                StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
-                                            } catch (Exception ignored) {
-                                            }
-                                        }
-                                        busyNpcs.remove(npcInstanceId);
-
-                                        // 3. Set LockedTarget to our invisible entity
-                                        MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
-                                                MarkedEntitySupport.DEFAULT_TARGET_SLOT, targetRef);
-
-                                        // Hytale silently ignores unknown states/target slots; verify both.
-                                        StateSupport stateSupport = StateSupport.get(entityRef, store);
-                                        int moveState = stateSupport.getStateHelper()
-                                                .getStateIndex(NpcMovementProgress.STATE);
-                                        if (moveState < 0 || !targetRef.equals(MarkedEntitySupport.get(entityRef, store)
-                                                .getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT))) {
-                                            logger.warn("[Hycompanion] Movement role or target slot unavailable for "
-                                                    + npcInstanceId + "; regenerate the role and respawn the NPC");
-                                            result.complete(NpcMoveResult.failed("movement_role_unavailable"));
-                                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                            return;
-                                        }
-                                        stateSupport.setState(entityRef, NpcMovementProgress.STATE, null, store);
-                                        if (stateSupport.getStateIndex() != moveState) {
-                                            result.complete(NpcMoveResult.failed("movement_state_unavailable"));
-                                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                            return;
-                                        }
-                                        busyNpcs.add(npcInstanceId);
-                                        logger.info("[Hycompanion] NPC started moving to stationary marker at " + location);
-                                    } else {
-                                        result.complete(NpcMoveResult.failed("npc_role_unavailable"));
-                                        cleanupMovement(npcInstanceId);
-                                    }
-                                } else {
-                                    result.complete(NpcMoveResult.failed("npc_component_unavailable"));
-                                    cleanupMovement(npcInstanceId);
-                                }
-                            } else {
-                                logger.error("Failed to spawn movement target entity");
-                                result.complete(NpcMoveResult.failed("spawn_failed"));
-                            }
-                        } catch (Exception e) {
-                            logger.error("Error setting up move: " + e.getMessage());
-                            Sentry.captureException(e);
-                            result.complete(NpcMoveResult.failed("error: " + e.getMessage()));
-                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                        }
-                    });
-
-                    // Start monitoring
-                    AtomicInteger ticks = new AtomicInteger(0);
-                    NpcMovementProgress progress = new NpcMovementProgress(location);
-                    // Absolute maximum timeout: 5 minutes (for very long distances)
-                    final int MAX_TICKS = 5 * 60 * 4; // 5 min * 60 sec * 4 ticks/sec (250ms interval)
-
-                    ScheduledFuture<?> task = rotationScheduler.scheduleAtFixedRate(() -> {
-                        // [Shutdown Fix] Check shutdown flag first
-                        if (isShuttingDown() || Thread.currentThread().isInterrupted()) {
-                            result.complete(NpcMoveResult.failed("shutdown"));
-                            cleanupMovement(npcInstanceId);
-                            return;
-                        }
-
-                        // Check if already done (completed by another execution)
-                        if (result.isDone()) {
-                            cleanupMovement(npcInstanceId);
-                            return;
-                        }
-
-                        // Increment tick counter
-                        int currentTick = ticks.incrementAndGet();
-
-                        // Absolute maximum timeout (5 minutes) as safety net
-                        if (currentTick > MAX_TICKS) {
-                            logger.info(
-                                    "[Hycompanion] Move absolute timeout after " + currentTick + " checks (~5 min)");
-
-                            safeWorldExecute(world, () -> {
-                                if (result.isDone())
-                                    return;
-                                try {
-                                    Location finalLoc = null;
-                                    if (entityRef.isValid()) {
-                                        TransformComponent t = store.getComponent(entityRef,
-                                                TransformComponent.getComponentType());
-                                        if (t != null) {
-                                            Vector3d p = t.getPosition();
-                                            finalLoc = Location.of(p.x(), p.y(), p.z(), world.getName());
-                                        }
-                                    }
-                                    result.complete(NpcMoveResult.timeout(finalLoc));
-                                    cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                } catch (Exception e) {
-                                    Sentry.captureException(e);
-                                    result.complete(NpcMoveResult.timeout(null));
-                                    cleanupMovement(npcInstanceId);
-                                }
-                            });
-                            return;
-                        }
-
-                        // Check arrival and stuck detection on world thread
-                        safeWorldExecute(world, () -> {
-                            // Double-check completion status inside world thread
-                            if (result.isDone()) {
-                                return;
-                            }
-                            try {
-                                if (!entityRef.isValid()) {
-                                    result.complete(NpcMoveResult.failed("entity_lost"));
-                                    cleanupMovement(npcInstanceId);
-                                    return;
-                                }
-                                Ref<EntityStore> marker = movementTargetEntities.get(npcInstanceId);
-                                if (marker == null || !marker.isValid()) {
-                                    result.complete(NpcMoveResult.failed("movement_target_lost"));
-                                    cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                    return;
-                                }
-                                TransformComponent t = store.getComponent(entityRef,
-                                        TransformComponent.getComponentType());
-                                if (t == null) {
-                                    return;
-                                }
-
-                                Vector3d currentPos = t.getPosition();
-                                double currentX = currentPos.x();
-                                double currentY = currentPos.y();
-                                double currentZ = currentPos.z();
-
-                                // Calculate distance to target
-                                double dx = currentX - location.x();
-                                double dy = currentY - location.y();
-                                double dz = currentZ - location.z();
-                                double distSq = dx * dx + dy * dy + dz * dz;
-
-                                double distance = Math.sqrt(distSq);
-                                Location finalLoc = Location.of(currentX, currentY, currentZ, world.getName());
-                                NpcMovementProgress.Status movementStatus = progress.observe(finalLoc,
-                                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
-                                if (movementStatus == NpcMovementProgress.Status.ARRIVED) {
-                                    logger.info("[Hycompanion] NPC arrived at destination, distance=" +
-                                            String.format("%.2f", distance) + " blocks");
-                                    result.complete(NpcMoveResult.success(finalLoc));
-                                    cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                    return;
-                                }
-                                if (movementStatus == NpcMovementProgress.Status.STUCK) {
-                                    logger.info("[Hycompanion] NPC stuck: no significant movement for 3s, distance="
-                                            + String.format("%.2f", distance) + " blocks from target, state="
-                                            + StateSupport.get(entityRef, store).getStateName());
-                                    result.complete(NpcMoveResult.timeout(finalLoc));
-                                    cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                    return;
-                                }
-
-                                // Progress logging every 5 seconds (20 ticks * 250ms)
-                                if (currentTick % 10 == 0) {
-                                    logger.debug("[Hycompanion] NPC moving... distance=" +
-                                            String.format("%.2f", distance) + " blocks to target");
-                                }
-                            } catch (Exception e) {
-                                logger.debug("[Hycompanion] Error checking NPC position: " + e.getMessage());
-                                Sentry.captureException(e);
-                            }
-                        });
-
-                    }, 250, 250, TimeUnit.MILLISECONDS);
-                    movementTasks.put(npcInstanceId, task);
-
-                } else {
-                    result.complete(NpcMoveResult.failed("no_world"));
-                }
-            } catch (Exception e) {
-                logger.error("Could not move NPC: " + e.getMessage());
-                Sentry.captureException(e);
-                result.complete(NpcMoveResult.failed("error: " + e.getMessage()));
+        try {
+            Store<EntityStore> store = entityRef.getStore();
+            World world = store.getExternalData().getWorld();
+            if (world == null) {
+                finishMovement(npcInstanceId, session, NpcMoveResult.failed("no_world"));
+                return session.result();
             }
-        } else {
-            result.complete(NpcMoveResult.failed("entity_ref_invalid"));
-        }
+            boolean scheduled = safeWorldExecute(world, () -> {
+                if (!isCurrentMovement(npcInstanceId, session)) return;
+                try {
+                    if (!entityRef.isValid()) {
+                        finishMovement(npcInstanceId, session, NpcMoveResult.failed("entity_lost"));
+                        return;
+                    }
+                    NPCEntity npc = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    if (npc == null || npc.getRole() == null) {
+                        finishMovement(npcInstanceId, session, NpcMoveResult.failed("npc_role_unavailable"));
+                        return;
+                    }
+                    StateSupport state = StateSupport.get(entityRef, store);
+                    String movementState = NpcMovementProgress.selectState(
+                            state.getStateHelper().getStateIndex(NpcMovementProgress.STATE) >= 0,
+                            state.getStateHelper().getStateIndex("Follow") >= 0);
+                    if (movementState == null) {
+                        logger.warn("[Hycompanion] No movement state for " + npcInstanceId
+                                + "; regenerate the role and respawn the NPC");
+                        finishMovement(npcInstanceId, session, NpcMoveResult.failed("movement_role_unavailable"));
+                        return;
+                    }
+                    if (!NpcMovementProgress.STATE.equals(movementState)) {
+                        logger.info("[Hycompanion] Using legacy Follow behavior for coordinate movement; "
+                                + "update the role for precise stopping distance");
+                    }
 
-        return result;
+                    // Server-only stationary marker; Seek requires an explicit bounding box.
+                    Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
+                    holder.putComponent(TransformComponent.getComponentType(), new TransformComponent(
+                            new Vector3d(location.x(), location.y(), location.z()), Rotation3f.ZERO));
+                    holder.ensureComponent(UUIDComponent.getComponentType());
+                    holder.putComponent(BoundingBox.getComponentType(),
+                            new BoundingBox(Box.horizontallyCentered(0.1, 0.1, 0.1)));
+                    holder.ensureComponent(Intangible.getComponentType());
+                    Ref<EntityStore> targetRef = store.addEntity(holder, AddReason.SPAWN);
+                    if (targetRef == null || !targetRef.isValid()) {
+                        finishMovement(npcInstanceId, session, NpcMoveResult.failed("spawn_failed"));
+                        return;
+                    }
+                    if (!session.setTarget(targetRef) || !isCurrentMovement(npcInstanceId, session)) return;
+
+                    instance.resetAnimationsAndPosture(store, "moveNpcTo");
+                    MarkedEntitySupport marked = MarkedEntitySupport.get(entityRef, store);
+                    marked.setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, targetRef);
+                    if (!targetRef.equals(marked.getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT))) {
+                        finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                                NpcMoveResult.failed("movement_target_unavailable"));
+                        return;
+                    }
+                    state.setState(entityRef, movementState, null, store);
+                    if (state.getStateIndex() != state.getStateHelper().getStateIndex(movementState)) {
+                        finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                                NpcMoveResult.failed("movement_state_unavailable"));
+                        return;
+                    }
+                    busyNpcs.add(npcInstanceId);
+                    logger.info("[Hycompanion] NPC moving to stationary marker at " + location
+                            + ", state=" + state.getStateName());
+                    startMovementMonitor(npcInstanceId, session, entityRef, store, world, location);
+                } catch (Exception e) {
+                    logger.error("[Hycompanion] Error setting up movement: " + e.getMessage());
+                    Sentry.captureException(e);
+                    finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                            NpcMoveResult.failed("movement_setup_error"));
+                }
+            });
+            if (!scheduled) finishMovement(npcInstanceId, session, NpcMoveResult.failed("shutdown"));
+        } catch (Exception e) {
+            logger.error("[Hycompanion] Could not move NPC: " + e.getMessage());
+            Sentry.captureException(e);
+            finishMovement(npcInstanceId, session, NpcMoveResult.failed("movement_setup_error"));
+        }
+        return session.result();
+    }
+
+    private void startMovementMonitor(UUID npcInstanceId, NpcMovementSession<Ref<EntityStore>> session,
+            Ref<EntityStore> entityRef, Store<EntityStore> store, World world, Location destination) {
+        NpcMovementProgress progress = new NpcMovementProgress(destination);
+        long started = System.nanoTime();
+        ScheduledFuture<?> task = rotationScheduler.scheduleAtFixedRate(() -> {
+            if (!isCurrentMovement(npcInstanceId, session)) return;
+            if (isShuttingDown() || Thread.currentThread().isInterrupted()) {
+                finishMovement(npcInstanceId, session, NpcMoveResult.failed("shutdown"));
+                return;
+            }
+            boolean scheduled = safeWorldExecute(world, () -> {
+                // Already queued callbacks must never clear a newer movement or player-follow target.
+                if (!isCurrentMovement(npcInstanceId, session)) return;
+                try {
+                    if (!entityRef.isValid()) {
+                        finishMovement(npcInstanceId, session, NpcMoveResult.failed("entity_lost"));
+                        return;
+                    }
+                    Ref<EntityStore> marker = session.target();
+                    if (marker == null || !marker.isValid()) {
+                        finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                                NpcMoveResult.failed("movement_target_lost"));
+                        return;
+                    }
+                    TransformComponent transform = store.getComponent(entityRef, TransformComponent.getComponentType());
+                    if (transform == null) {
+                        finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                                NpcMoveResult.failed("position_unavailable"));
+                        return;
+                    }
+                    Vector3d pos = transform.getPosition();
+                    Location observed = Location.of(pos.x(), pos.y(), pos.z(), world.getName());
+                    long now = System.nanoTime();
+                    NpcMovementProgress.Status status = progress.observe(observed,
+                            TimeUnit.NANOSECONDS.toMillis(now));
+                    if (status == NpcMovementProgress.Status.ARRIVED) {
+                        logger.info("[Hycompanion] NPC arrived, distance=" + observed.distanceTo(destination));
+                        finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                                NpcMoveResult.success(observed));
+                    } else if (status == NpcMovementProgress.Status.STUCK
+                            || now - started >= TimeUnit.MINUTES.toNanos(5)) {
+                        logger.info("[Hycompanion] NPC movement timed out, distance="
+                                + observed.distanceTo(destination) + ", state="
+                                + StateSupport.get(entityRef, store).getStateName());
+                        finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                                NpcMoveResult.timeout(observed));
+                    }
+                } catch (Exception e) {
+                    logger.warn("[Hycompanion] Could not monitor NPC movement: " + e.getMessage());
+                    Sentry.captureException(e);
+                    finishMovementAndResetState(npcInstanceId, session, entityRef, store,
+                            NpcMoveResult.failed("movement_monitor_error"));
+                }
+            });
+            if (!scheduled) finishMovement(npcInstanceId, session, NpcMoveResult.failed("shutdown"));
+        }, 250, 250, TimeUnit.MILLISECONDS);
+        session.setMonitor(task);
     }
 
     private void removeEntity(Ref<EntityStore> ref) {
@@ -1419,41 +1337,84 @@ public class HytaleServerAdapter implements HytaleAPI {
     }
 
     private void cleanupMovement(UUID npcInstanceId) {
-        ScheduledFuture<?> t = movementTasks.remove(npcInstanceId);
-        if (t != null)
-            t.cancel(false);
+        NpcMovementSession<Ref<EntityStore>> session = movementSessions.remove(npcInstanceId);
+        if (session != null) cancelMovementSession(npcInstanceId, session);
+    }
 
-        Ref<EntityStore> target = movementTargetEntities.remove(npcInstanceId);
-        if (target != null)
-            removeEntity(target);
+    private void cancelMovementSession(UUID npcInstanceId, NpcMovementSession<Ref<EntityStore>> session) {
+        try {
+            Ref<EntityStore> target = session.target();
+            NpcInstanceData instance = npcInstanceEntities.get(npcInstanceId);
+            if (!isShuttingDown() && target != null && instance != null
+                    && instance.entityRef() != null && instance.entityRef().isValid()) {
+                Store<EntityStore> store = instance.entityRef().getStore();
+                World world = store.getExternalData().getWorld();
+                if (world != null) safeWorldExecute(world,
+                        () -> resetMovementState(npcInstanceId, target, instance.entityRef(), store));
+            }
+        } catch (Exception e) {
+            logger.debug("[Hycompanion] Could not reset interrupted movement: " + e.getMessage());
+            Sentry.captureException(e);
+        } finally {
+            session.finish(NpcMoveResult.failed("interrupted"));
+        }
+    }
+
+    private boolean isCurrentMovement(UUID npcInstanceId, NpcMovementSession<Ref<EntityStore>> session) {
+        return movementSessions.get(npcInstanceId) == session;
+    }
+
+    private void finishMovement(UUID npcInstanceId, NpcMovementSession<Ref<EntityStore>> session,
+            NpcMoveResult outcome) {
+        if (movementSessions.remove(npcInstanceId, session)) session.finish(outcome);
+    }
+
+    private int cancelAllMovements() {
+        List<NpcMovementSession<Ref<EntityStore>>> pending;
+        synchronized (movementSessions) {
+            movementsClosed = true;
+            pending = new ArrayList<>(movementSessions.values());
+            movementSessions.clear();
+        }
+        for (var session : pending) session.finish(NpcMoveResult.failed("shutdown"));
+        return pending.size();
     }
 
     /**
      * Cleanup movement and reset NPC state to Idle.
      * This should be called from within a world thread execution.
      */
-    private void cleanupMovementAndResetState(UUID npcInstanceId, Ref<EntityStore> entityRef,
+    private void finishMovementAndResetState(UUID npcInstanceId, NpcMovementSession<Ref<EntityStore>> session,
+            Ref<EntityStore> entityRef, Store<EntityStore> store, NpcMoveResult outcome) {
+        if (!isCurrentMovement(npcInstanceId, session)) return;
+        resetMovementState(npcInstanceId, session.target(), entityRef, store);
+        // Release the marker/monitor and reset state before the future can trigger another action.
+        finishMovement(npcInstanceId, session, outcome);
+    }
+
+    private void resetMovementState(UUID npcInstanceId, Ref<EntityStore> marker, Ref<EntityStore> entityRef,
             Store<EntityStore> store) {
-        // Reset NPC state to Idle
         try {
+            if (marker == null || !entityRef.isValid()) return;
+            StateSupport state = StateSupport.get(entityRef, store);
+            String stateName = state.getStateName();
+            MarkedEntitySupport marked = MarkedEntitySupport.get(entityRef, store);
+            Ref<EntityStore> target = marked.getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT);
+            if (!(stateName.startsWith(NpcMovementProgress.STATE + ".") || stateName.startsWith("Follow."))
+                    || (target != null && !marker.equals(target))) return;
+
             NpcInstanceData instanceData = npcInstanceEntities.get(npcInstanceId);
             if (instanceData != null) {
                 instanceData.resetAnimationsAndPosture(store, "cleanupMovement");
             }
 
-            NPCEntity npc = store.getComponent(entityRef, NPCEntity.getComponentType());
-            if (npc != null && npc.getRole() != null) {
-                StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
-                MarkedEntitySupport.get(entityRef, store).setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
-                busyNpcs.remove(npcInstanceId);
-            }
+            state.setState(entityRef, "Idle", null, store);
+            marked.setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
+            busyNpcs.remove(npcInstanceId);
         } catch (Exception e) {
             logger.debug("[Hycompanion] Error resetting NPC state: " + e.getMessage());
             Sentry.captureException(e);
         }
-
-        // Cleanup movement tracking
-        cleanupMovement(npcInstanceId);
     }
 
     // Circuit breaker for timeouts
@@ -3199,14 +3160,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         try {
             Store<EntityStore> store = entityRef.getStore();
 
-            // Get the correct world for this NPC, not the default world
-            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
-            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
-            if (resolvedWorld == null) {
-                resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] startFollowingPlayer: Could not find world '" + worldName
-                        + "' for NPC, falling back to default world");
-            }
+            World resolvedWorld = store.getExternalData().getWorld();
 
             if (resolvedWorld != null) {
                 final World world = resolvedWorld;
@@ -3321,6 +3275,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
     @Override
     public boolean stopFollowing(UUID npcInstanceId) {
+        cleanupMovement(npcInstanceId);
         logger.info("[Hycompanion] NPC [" + npcInstanceId + "] stopping follow");
 
         NpcInstanceData npcInstanceData = npcInstanceEntities.get(npcInstanceId);
@@ -3345,14 +3300,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         try {
             Store<EntityStore> store = entityRef.getStore();
 
-            // Get the correct world for this NPC, not the default world
-            String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world() : null;
-            World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
-            if (resolvedWorld == null) {
-                resolvedWorld = Universe.get().getDefaultWorld();
-                logger.warn("[Hycompanion] stopFollowing: Could not find world '" + worldName
-                        + "' for NPC, falling back to default world");
-            }
+            World resolvedWorld = store.getExternalData().getWorld();
 
             if (resolvedWorld != null) {
                 final World world = resolvedWorld;
@@ -3567,7 +3515,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         long stepStart = System.currentTimeMillis();
         int cancelledTasks = 0;
         int rotationCount = rotationTasks.size();
-        int movementCount = movementTasks.size();
+        int movementCount = movementSessions.size();
         int thinkingCount = thinkingAnimationTasks.size();
 
         for (ScheduledFuture<?> task : rotationTasks.values()) {
@@ -3578,13 +3526,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         }
         rotationTasks.clear();
 
-        for (ScheduledFuture<?> task : movementTasks.values()) {
-            if (task != null && !task.isDone()) {
-                task.cancel(true);
-                cancelledTasks++;
-            }
-        }
-        movementTasks.clear();
+        cancelledTasks += cancelAllMovements();
 
         for (ScheduledFuture<?> task : thinkingAnimationTasks.values()) {
             if (task != null && !task.isDone()) {
@@ -3621,25 +3563,19 @@ public class HytaleServerAdapter implements HytaleAPI {
         // STEP 3: Complete any pending movement futures
         logger.info("[Hycompanion] Step 3/5: Checking for pending futures...");
         stepStart = System.currentTimeMillis();
-        int pendingFutures = 0;
-        for (var entry : movementTasks.entrySet()) {
-            if (!entry.getValue().isDone()) {
-                pendingFutures++;
-            }
-            entry.getValue().cancel(true);
-        }
-        logger.info("[Hycompanion] Step 3/5: Found and cancelled " + pendingFutures + " pending futures in " +
+        int pendingFutures = movementSessions.size();
+        logger.info("[Hycompanion] Step 3/5: " + pendingFutures + " movement requests remain after cancellation in " +
                 (System.currentTimeMillis() - stepStart) + "ms");
 
         // STEP 4: Clear entity references
         logger.info("[Hycompanion] Step 4/5: Clearing entity references...");
         stepStart = System.currentTimeMillis();
         int npcCount = npcInstanceEntities.size();
-        int targetCount = movementTargetEntities.size();
+        int targetCount = movementSessions.size();
         int busyCount = busyNpcs.size();
 
         npcInstanceEntities.clear();
-        movementTargetEntities.clear();
+        movementSessions.clear();
         busyNpcs.clear();
         npcSpawnLocations.clear();
         pendingRespawns.clear();
@@ -3997,6 +3933,9 @@ public class HytaleServerAdapter implements HytaleAPI {
                     TransformComponent transform = store.getComponent(entityRef, TransformComponent.getComponentType());
                     if (transform != null) {
                         Vector3d newPos = new Vector3d(location.x(), location.y(), location.z());
+                        NpcMovementSession<Ref<EntityStore>> movement = movementSessions.get(npcInstanceId);
+                        if (movement != null) finishMovementAndResetState(npcInstanceId, movement, entityRef, store,
+                                NpcMoveResult.failed("interrupted"));
                         transform.setPosition(newPos);
 
                         // Update leash point so NPC wanders around new location
@@ -4880,13 +4819,7 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Cancel all movement tasks
         stepStart = System.currentTimeMillis();
         cancelled = 0;
-        for (ScheduledFuture<?> task : movementTasks.values()) {
-            if (task != null && !task.isDone()) {
-                task.cancel(true);
-                cancelled++;
-            }
-        }
-        movementTasks.clear();
+        cancelled = cancelAllMovements();
         logger.info("[Hycompanion] Cancelled " + cancelled + " movement tasks in " +
                 (System.currentTimeMillis() - stepStart) + "ms");
 
@@ -4922,13 +4855,13 @@ public class HytaleServerAdapter implements HytaleAPI {
         // Clear tracking maps
         stepStart = System.currentTimeMillis();
         int npcCount = npcInstanceEntities.size();
-        int targetCount = movementTargetEntities.size();
+        int targetCount = movementSessions.size();
         int busyCount = busyNpcs.size();
         int spawnLocCount = npcSpawnLocations.size();
         int pendingRespawnCount = pendingRespawns.size();
 
         npcInstanceEntities.clear();
-        movementTargetEntities.clear();
+        movementSessions.clear();
         busyNpcs.clear();
         npcSpawnLocations.clear();
         pendingRespawns.clear();

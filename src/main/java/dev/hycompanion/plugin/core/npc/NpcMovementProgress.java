@@ -20,6 +20,11 @@ public final class NpcMovementProgress {
         this.destination = destination;
     }
 
+    /** Preserve movement for inherited or cached roles that only provide Follow. */
+    public static String selectState(boolean hasMove, boolean hasFollow) {
+        return hasMove ? STATE : hasFollow ? "Follow" : null;
+    }
+
     public Status observe(Location position, long nowMillis) {
         if (position.distanceTo(destination) <= ARRIVAL_DISTANCE) {
             return Status.ARRIVED;

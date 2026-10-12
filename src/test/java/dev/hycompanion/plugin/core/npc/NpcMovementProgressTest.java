@@ -12,6 +12,14 @@ class NpcMovementProgressTest {
     // The NPC position returned by every move_to in the attached mushroom-gathering logs.
     private static final Location STATIONARY = Location.of(-706.1278907985318, 117, 47.572798887069894);
 
+    @Test
+    void prefersPreciseMovementAndPreservesLegacyFollowOnlyRoles() {
+        assertEquals("Move", NpcMovementProgress.selectState(true, true));
+        assertEquals("Move", NpcMovementProgress.selectState(true, false));
+        assertEquals("Follow", NpcMovementProgress.selectState(false, true));
+        org.junit.jupiter.api.Assertions.assertNull(NpcMovementProgress.selectState(false, false));
+    }
+
     @ParameterizedTest
     @ValueSource(doubles = {50, 51, 52, 53})
     void stationaryNpcIsStuckEvenWithinFiveBlocks(double targetZ) {

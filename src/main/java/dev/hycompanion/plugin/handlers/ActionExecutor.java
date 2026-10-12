@@ -519,7 +519,7 @@ public class ActionExecutor {
                 } else if ("timeout".equals(status)) {
                     response.put("stuck", true);
                     response.put("reason", "Path blocked or movement timed out");
-                } else if ("shutdown".equals(status)) {
+                } else if ("shutdown".equals(status) || "interrupted".equals(status)) {
                     response.put("interrupted", true);
                 } else {
                     // Any other failure status
