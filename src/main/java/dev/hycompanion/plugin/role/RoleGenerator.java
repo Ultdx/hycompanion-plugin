@@ -7,7 +7,6 @@ import com.google.gson.JsonObject;
 import dev.hycompanion.plugin.utils.PluginLogger;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
@@ -28,13 +27,18 @@ public class RoleGenerator {
     private final Path cacheDirectory;
     private final Path modDirectory;
     private final PluginLogger logger;
+    private final String pluginVersion;
+    private final String serverVersionRange;
     private boolean manifestCreatedThisSession = false;
 
-    public RoleGenerator(Path modDirectory, Path dataFolder, PluginLogger logger) {
+    public RoleGenerator(Path modDirectory, Path dataFolder, PluginLogger logger,
+            String pluginVersion, String serverVersionRange) {
         this.modDirectory = modDirectory;
         this.rolesDirectory = modDirectory.resolve("Server").resolve("NPC").resolve("Roles");
         this.cacheDirectory = dataFolder.resolve("role_cache");
         this.logger = logger;
+        this.pluginVersion = pluginVersion;
+        this.serverVersionRange = serverVersionRange;
     }
 
     /**
@@ -45,9 +49,6 @@ public class RoleGenerator {
     public void ensureModManifest() {
         Path manifestPath = modDirectory.resolve("manifest.json");
         try {
-            String targetServerVersion = resolveManifestFieldFromPluginManifest("ServerVersion", "*");
-            String pluginVersion = resolveManifestFieldFromPluginManifest("Version", "1.1.0");
-
             JsonObject manifestJson;
             boolean created = false;
             if (Files.exists(manifestPath)) {
@@ -66,16 +67,16 @@ public class RoleGenerator {
             // Asset pack identity must match plugin manifest identity for reliable role/animation loading.
             manifestJson.addProperty("Group", "dev.hycompanion");
             manifestJson.addProperty("Name", "Hycompanion");
-            if (!manifestJson.has("Version") || manifestJson.get("Version").isJsonNull()) {
-                manifestJson.addProperty("Version", pluginVersion);
-            }
+            manifestJson.addProperty("Version", pluginVersion);
             if (!manifestJson.has("Description") || manifestJson.get("Description").isJsonNull()) {
                 manifestJson.addProperty("Description", "Hycompanion dynamic NPC role assets");
             }
 
-            // Critical for new server validation: explicit target server version.
-            manifestJson.addProperty("ServerVersion", targetServerVersion);
+            // Use the loaded plugin's manifest, not a potentially shadowed classpath resource.
+            JsonElement previousRange = manifestJson.get("ServerVersion");
+            manifestJson.addProperty("ServerVersion", serverVersionRange);
 
+            Files.createDirectories(modDirectory);
             Files.writeString(manifestPath, GSON.toJson(manifestJson));
             if (created) {
                 manifestCreatedThisSession = true;
@@ -85,33 +86,16 @@ public class RoleGenerator {
                 logger.warn("Please restart the server for Hytale to load the new NPC roles.");
                 logger.warn("=================================================================");
             } else {
-                logger.debug("Validated/updated mod manifest at: " + manifestPath + " (ServerVersion=" + targetServerVersion + ")");
+                if (previousRange == null || !previousRange.equals(manifestJson.get("ServerVersion"))) {
+                    logger.info("Updated asset pack manifest at: " + manifestPath
+                            + " (ServerVersion=" + serverVersionRange + "). Restart the server if an old-version warning was already emitted.");
+                } else {
+                    logger.debug("Validated mod manifest at: " + manifestPath + " (ServerVersion=" + serverVersionRange + ")");
+                }
             }
         } catch (Exception e) {
             logger.error("Failed to create mod manifest: " + e.getMessage());
         }
-    }
-
-    private String resolveManifestFieldFromPluginManifest(String fieldName, String defaultValue) {
-        try (var in = RoleGenerator.class.getClassLoader().getResourceAsStream("manifest.json")) {
-            if (in == null) {
-                return defaultValue;
-            }
-            String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            JsonElement parsed = GSON.fromJson(content, JsonElement.class);
-            if (parsed != null && parsed.isJsonObject()) {
-                JsonObject json = parsed.getAsJsonObject();
-                if (json.has(fieldName) && !json.get(fieldName).isJsonNull()) {
-                    String value = json.get(fieldName).getAsString();
-                    if (value != null && !value.isBlank()) {
-                        return value;
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-            // Keep default fallback if resource cannot be parsed.
-        }
-        return defaultValue;
     }
 
     /**

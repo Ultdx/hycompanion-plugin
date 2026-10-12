@@ -226,7 +226,8 @@ public class HycompanionEntrypoint extends JavaPlugin {
             String modFolderName = getIdentifier().toString().replace(":", "_");
             Path modDirectory = modsFolder.resolve(modFolderName);
             HYTALE_LOGGER.atInfo().log("Mod directory for role files: " + modDirectory.toString());
-            roleGenerator = new RoleGenerator(modDirectory, dataFolder, logger);
+            roleGenerator = new RoleGenerator(modDirectory, dataFolder, logger,
+                    getManifest().getVersion().toString(), getManifest().getServerVersion().toString());
 
             // Load cached role files from previous runs
             // (Network is not available during setup phase - roles are synced during
@@ -316,7 +317,8 @@ public class HycompanionEntrypoint extends JavaPlugin {
                 Path modsFolder = dataFolder.getParent();
                 String modFolderName = getIdentifier().toString().replace(":", "_");
                 Path modDirectory = modsFolder.resolve(modFolderName);
-                roleGenerator = new RoleGenerator(modDirectory, dataFolder, logger);
+                roleGenerator = new RoleGenerator(modDirectory, dataFolder, logger,
+                        getManifest().getVersion().toString(), getManifest().getServerVersion().toString());
             }
 
             logger.info("Configuration loaded successfully");
