@@ -38,7 +38,7 @@ The Hycompanion Plugin is the client-side bridge that connects a Hytale server t
 
 - **Java 25.0.1 LTS** (OpenJDK Temurin) - [Download from Adoptium](https://adoptium.net/)
 - Maven 3.9+
-- Hytale Server
+- Hytale Server 0.7.0-pre.5.1 (API used for compilation)
 - Hycompanion Cloud account ([Get one here](https://app.hycompanion.dev))
 
 ### Verify Java Installation
@@ -65,6 +65,7 @@ Get the latest JAR from [Releases](https://github.com/hycompanion/hycompanion-pl
 #### Prerequisites
 - Java 25 (OpenJDK Temurin)
 - Maven 3.9+
+- The matching server JAR copied to `libs/HytaleServer.jar` for the Windows build script
 - (Optional) Sentry account for error tracking
 
 #### Clone and Build
@@ -83,9 +84,12 @@ mvn clean package
 
 # Or use the provided Windows batch script
 compile-plugin.bat
+
+# Local build without uploading sources to Sentry
+compile-plugin.bat --skip-sentry
 ```
 
-The compiled JAR will be in `target/hycompanion-plugin-1.1.0-SNAPSHOT-jar-with-dependencies.jar`.
+The Hytale plugin JAR will be in `target/hycompanion-hytale.jar`. The standalone bundle is `target/hycompanion-plugin-1.1.8-jar-with-dependencies.jar`.
 
 ### 3. Install
 

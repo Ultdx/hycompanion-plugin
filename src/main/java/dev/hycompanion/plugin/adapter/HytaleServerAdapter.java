@@ -31,10 +31,15 @@ import com.hypixel.hytale.server.core.inventory.InventoryComponent;
 import com.hypixel.hytale.server.core.inventory.ItemStack;
 import com.hypixel.hytale.server.core.inventory.container.ItemContainer;
 import com.hypixel.hytale.server.core.modules.block.components.ItemContainerBlock;
+import com.hypixel.hytale.server.core.modules.block.BlockModule;
+import com.hypixel.hytale.server.core.universe.world.accessor.SectionReader;
+import com.hypixel.hytale.server.core.universe.world.chunk.BlockOperations;
 import com.hypixel.hytale.server.npc.NPCPlugin;
 import com.hypixel.hytale.server.npc.asset.builder.StateMappingHelper;
 import com.hypixel.hytale.server.npc.entities.NPCEntity;
 import com.hypixel.hytale.server.npc.role.support.MarkedEntitySupport;
+import com.hypixel.hytale.server.npc.role.support.StateSupport;
+import com.hypixel.hytale.server.npc.role.support.CombatSupport;
 
 import com.hypixel.hytale.component.AddReason;
 import com.hypixel.hytale.component.Holder;
@@ -569,7 +574,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                             logger.info("[Spawn Debug]     - " + m.getName() + "()");
                         }
                     }
-                    var stateSupport = role.getStateSupport();
+                    var stateSupport = StateSupport.get(entityRef, store);
                     if (stateSupport != null) {
                         logger.info("[Spawn Debug]   Current state: " + stateSupport.getStateName());
 
@@ -1198,26 +1203,26 @@ public class HytaleServerAdapter implements HytaleAPI {
                                         // 2. Reset animations/posture and clear any existing follow target/state.
                                         npcInstanceData.resetAnimationsAndPosture(store, "moveNpcTo");
                                         try {
-                                            role.getMarkedEntitySupport()
+                                            MarkedEntitySupport.get(entityRef, store)
                                                     .setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
-                                            role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                            StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
                                         } catch (Exception e) {
                                             try {
-                                                role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                                StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
                                             } catch (Exception ignored) {
                                             }
                                         }
                                         busyNpcs.remove(npcInstanceId);
 
                                         // 3. Set LockedTarget to our invisible entity
-                                        role.getMarkedEntitySupport().setMarkedEntity(
+                                        MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
                                                 MarkedEntitySupport.DEFAULT_TARGET_SLOT, targetRef);
 
                                         // 4. Set state to Follow
                                         try {
-                                            role.getStateSupport().setState(entityRef, "Follow", null, store);
+                                            StateSupport.get(entityRef, store).setState(entityRef, "Follow", null, store);
                                         } catch (Exception e) {
-                                            role.getStateSupport().setState(entityRef, "Follow", "Default", store);
+                                            StateSupport.get(entityRef, store).setState(entityRef, "Follow", "Default", store);
                                         }
                                         busyNpcs.add(npcInstanceId);
                                         logger.info("[Hycompanion] NPC started following target marker to " + location);
@@ -1472,8 +1477,8 @@ public class HytaleServerAdapter implements HytaleAPI {
 
             NPCEntity npc = store.getComponent(entityRef, NPCEntity.getComponentType());
             if (npc != null && npc.getRole() != null) {
-                npc.getRole().getStateSupport().setState(entityRef, "Idle", null, store);
-                npc.getRole().getMarkedEntitySupport().setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
+                StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
+                MarkedEntitySupport.get(entityRef, store).setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
                 busyNpcs.remove(npcInstanceId);
             }
         } catch (Exception e) {
@@ -1592,6 +1597,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                 }
 
                 logger.debug("Searching for blocks with " + searchDescription + " in radius " + radius);
+                SectionReader blockReader = new SectionReader(world.getChunkStore());
 
                 // Spiral Search
                 com.hypixel.hytale.math.iterator.SpiralIterator iterator = new com.hypixel.hytale.math.iterator.SpiralIterator(
@@ -1603,14 +1609,15 @@ public class HytaleServerAdapter implements HytaleAPI {
                     int z = com.hypixel.hytale.math.util.MathUtil.unpackRight(packedPos);
 
                     // Optimization: Check if chunk is loaded first
-                    com.hypixel.hytale.server.core.universe.world.chunk.WorldChunk chunk = world
-                            .getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z));
-                    if (chunk == null)
+                    if (!world.getChunkStore().hasLoadedSections(
+                            com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z)))
                         continue;
 
                     // Scan Y range (NPC height +/- 10 blocks)
                     for (int y = Math.max(0, startY - 10); y <= Math.min(255, startY + 10); y++) {
-                        int blockId = chunk.getBlock(x, y, z);
+                        if (!blockReader.hasStorageInMemory(x, y, z))
+                            continue;
+                        int blockId = blockReader.getBlock(x, y, z);
                         if (targetBlockIds.contains(blockId)) {
                             // Get the actual block type for the result
                             var blockType = blockTypeAssetMap.getAsset(blockId);
@@ -1706,6 +1713,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                 }
 
                 var fluidTypeAssetMap = com.hypixel.hytale.server.core.asset.type.fluid.Fluid.getAssetMap();
+                SectionReader blockReader = new SectionReader(world.getChunkStore());
 
                 // Data structures to track found blocks/fluids
                 // Map<blockId, BlockScanInfo>
@@ -1723,13 +1731,14 @@ public class HytaleServerAdapter implements HytaleAPI {
                     int z = com.hypixel.hytale.math.util.MathUtil.unpackRight(packedPos);
 
                     // Optimization: Check if chunk is loaded first
-                    com.hypixel.hytale.server.core.universe.world.chunk.WorldChunk chunk = world
-                            .getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z));
-                    if (chunk == null)
+                    if (!world.getChunkStore().hasLoadedSections(
+                            com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z)))
                         continue;
 
                     // Scan Y range (NPC height +/- 10 blocks)
                     for (int y = Math.max(0, startY - 10); y <= Math.min(255, startY + 10); y++) {
+                        if (!blockReader.hasStorageInMemory(x, y, z))
+                            continue;
                         // Calculate exact distance to voxel center (shared by block + fluid scanning)
                         double voxelCenterX = x + 0.5;
                         double voxelCenterY = y + 0.5;
@@ -1742,7 +1751,7 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                         // Scan fluid at this voxel first (fluids are stored separately from blocks)
                         if (fluidTypeAssetMap != null) {
-                            int fluidIdInt = chunk.getFluidId(x, y, z);
+                            int fluidIdInt = blockReader.getFluidId(x, y, z);
                             if (fluidIdInt > 0) {
                                 var fluidType = fluidTypeAssetMap.getAsset(fluidIdInt);
                                 if (fluidType != null) {
@@ -1765,7 +1774,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                             }
                         }
 
-                        int blockIdInt = chunk.getBlock(x, y, z);
+                        int blockIdInt = blockReader.getBlock(x, y, z);
                         var blockType = blockTypeAssetMap.getAsset(blockIdInt);
                         if (blockType == null) {
                             continue;
@@ -1777,9 +1786,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                         }
 
                         if (containersOnly) {
-                            Holder<ChunkStore> blockHolder = chunk.getBlockComponentHolder(x, y, z);
-                            if (blockHolder == null
-                                    || blockHolder.getComponent(ItemContainerBlock.getComponentType()) == null) {
+                            if (BlockModule.getComponent(ItemContainerBlock.getComponentType(), world, x, y, z) == null) {
                                 continue;
                             }
                         }
@@ -2560,13 +2567,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 // Check busy states to prevent AI conflict
                                 var role = npcEntity.getRole();
                                 if (role != null) {
-                                    var stateSupport = role.getStateSupport();
+                                    var stateSupport = StateSupport.get(entityRef, store);
                                     if (stateSupport != null && stateSupport.isInBusyState()) {
                                         cancelSpecificRotationTask(npcInstanceId, self);
                                         return;
                                     }
 
-                                    var markedSupport = role.getMarkedEntitySupport();
+                                    var markedSupport = MarkedEntitySupport.get(entityRef, store);
                                     if (markedSupport != null) {
                                         var lockedTarget = markedSupport
                                                 .getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT);
@@ -3281,11 +3288,11 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                                     // Also reset state machine to Idle
                                     try {
-                                        role.getStateSupport().setState(entityRef, "Idle", null, store);
-                                        String stateAfterIdle = role.getStateSupport().getStateName();
+                                        StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
+                                        String stateAfterIdle = StateSupport.get(entityRef, store).getStateName();
                                         if (!stateAfterIdle.startsWith("Idle.")) {
                                             // Some roles do not expose an Idle state; force canonical fallback state.
-                                            role.getStateSupport().setState(entityRef, "start", null, store);
+                                            StateSupport.get(entityRef, store).setState(entityRef, "start", null, store);
                                         }
                                     } catch (Exception e) {
                                         logger.debug("[Hycompanion] Could not reset state to Idle: " + e.getMessage());
@@ -3293,22 +3300,22 @@ public class HytaleServerAdapter implements HytaleAPI {
                                     }
 
                                     // Set the player as the follow target using MarkedEntitySupport.
-                                    role.getMarkedEntitySupport().setMarkedEntity(
+                                    MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
                                             MarkedEntitySupport.DEFAULT_TARGET_SLOT, playerEntityRef);
 
                                     // Try to transition to a Follow state if it exists
                                     // Most NPCs have Idle state, Follow might need to be added via role config
                                     try {
-                                        role.getStateSupport().setState(entityRef, "Follow", null, store);
+                                        StateSupport.get(entityRef, store).setState(entityRef, "Follow", null, store);
                                         busyNpcs.add(npcInstanceId);
 
                                         // Debug: Verify the state was actually set
-                                        String currentState = role.getStateSupport().getStateName();
+                                        String currentState = StateSupport.get(entityRef, store).getStateName();
                                         logger.info("[Hycompanion] NPC transitioned to Follow state. Current state: "
                                                 + currentState);
 
                                         // Debug: Verify LockedTarget is set
-                                        var markedRef = role.getMarkedEntitySupport()
+                                        var markedRef = MarkedEntitySupport.get(entityRef, store)
                                                 .getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT);
                                         logger.info("[Hycompanion] LockedTarget set: "
                                                 + (markedRef != null && markedRef.isValid()));
@@ -3398,16 +3405,16 @@ public class HytaleServerAdapter implements HytaleAPI {
                             var role = npcEntity.getRole();
                             if (role != null) {
                                 // Get the current follow target before clearing (to notify them)
-                                Ref<EntityStore> targetRef = role.getMarkedEntitySupport()
+                                Ref<EntityStore> targetRef = MarkedEntitySupport.get(entityRef, store)
                                         .getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT);
 
                                 // Clear the follow target
-                                role.getMarkedEntitySupport().setMarkedEntity(
+                                MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
                                         MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
 
                                 // Return to Idle state
                                 try {
-                                    role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                    StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
                                     busyNpcs.remove(npcInstanceId);
                                     logger.info("[Hycompanion] NPC returned to Idle state");
 
@@ -3492,7 +3499,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                 }
 
                 // Check if this NPC has the player as its LockedTarget
-                var markedSupport = role.getMarkedEntitySupport();
+                var markedSupport = MarkedEntitySupport.get(entityRef, store);
                 if (markedSupport == null) {
                     continue;
                 }
@@ -3535,7 +3542,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 markedSupport.setMarkedEntity(MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
 
                                 // Return to Idle state
-                                var stateSupport = role.getStateSupport();
+                                var stateSupport = StateSupport.get(entityRef, store);
                                 if (stateSupport != null) {
                                     stateSupport.setState(entityRef, "Idle", null, store);
                                 }
@@ -3829,18 +3836,18 @@ public class HytaleServerAdapter implements HytaleAPI {
 
                                 // Also reset state machine to Idle
                                 try {
-                                    role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                    StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
                                 } catch (Exception e) {
                                     logger.debug("[Hycompanion] Could not reset state to Idle: " + e.getMessage());
                                     Sentry.captureException(e);
                                 }
 
                                 // Set the target using MarkedEntitySupport
-                                role.getMarkedEntitySupport().setMarkedEntity(
+                                MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
                                         MarkedEntitySupport.DEFAULT_TARGET_SLOT, finalTargetRef);
 
                                 // Configure attack type using CombatSupport
-                                var combatSupport = role.getCombatSupport();
+                                var combatSupport = CombatSupport.get(entityRef, store);
                                 if (combatSupport != null) {
                                     combatSupport.clearAttackOverrides();
                                     if ("ranged".equalsIgnoreCase(attackType)) {
@@ -3853,12 +3860,12 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 // Try to transition to Combat/Attack state
                                 // We check which states are available in the role definition
                                 try {
-                                    StateMappingHelper stateHelper = role.getStateSupport().getStateHelper();
+                                    StateMappingHelper stateHelper = StateSupport.get(entityRef, store).getStateHelper();
                                     boolean stateSet = false;
 
                                     // 1. Try "Combat" state (Standard)
                                     if (stateHelper.getStateIndex("Combat") >= 0) {
-                                        role.getStateSupport().setState(entityRef, "Combat", "Attack", store);
+                                        StateSupport.get(entityRef, store).setState(entityRef, "Combat", "Attack", store);
                                         stateSet = true;
                                         logger.info("[Hycompanion] NPC transitioned to Combat.Attack state");
                                     }
@@ -3867,17 +3874,17 @@ public class HytaleServerAdapter implements HytaleAPI {
                                         // For Chase, we prefer the "Attack" substate if it exists
                                         if (stateHelper.getSubStateIndex(stateHelper.getStateIndex("Chase"),
                                                 "Attack") >= 0) {
-                                            role.getStateSupport().setState(entityRef, "Chase", "Attack", store);
+                                            StateSupport.get(entityRef, store).setState(entityRef, "Chase", "Attack", store);
                                             logger.info("[Hycompanion] NPC transitioned to Chase.Attack state");
                                         } else {
-                                            role.getStateSupport().setState(entityRef, "Chase", "Default", store);
+                                            StateSupport.get(entityRef, store).setState(entityRef, "Chase", "Default", store);
                                             logger.info("[Hycompanion] NPC transitioned to Chase.Default state");
                                         }
                                         stateSet = true;
                                     }
                                     // 3. Try "Attack" state (Simple)
                                     else if (stateHelper.getStateIndex("Attack") >= 0) {
-                                        role.getStateSupport().setState(entityRef, "Attack", "Default", store);
+                                        StateSupport.get(entityRef, store).setState(entityRef, "Attack", "Default", store);
                                         stateSet = true;
                                         logger.info("[Hycompanion] NPC transitioned to Attack state");
                                     }
@@ -3952,18 +3959,18 @@ public class HytaleServerAdapter implements HytaleAPI {
                             var role = npcEntity.getRole();
                             if (role != null) {
                                 // Clear combat overrides
-                                var combatSupport = role.getCombatSupport();
+                                var combatSupport = CombatSupport.get(entityRef, store);
                                 if (combatSupport != null) {
                                     combatSupport.clearAttackOverrides();
                                 }
 
                                 // Clear the target
-                                role.getMarkedEntitySupport().setMarkedEntity(
+                                MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
                                         MarkedEntitySupport.DEFAULT_TARGET_SLOT, null);
 
                                 // Return to Idle state
                                 try {
-                                    role.getStateSupport().setState(entityRef, "Idle", null, store);
+                                    StateSupport.get(entityRef, store).setState(entityRef, "Idle", null, store);
                                     busyNpcs.remove(npcInstanceId);
                                     logger.info("[Hycompanion] NPC returned to Idle state");
                                 } catch (Exception e) {
@@ -5580,14 +5587,14 @@ public class HytaleServerAdapter implements HytaleAPI {
                     // Get block type before breaking
                     var blockTypeAssetMap = com.hypixel.hytale.server.core.asset.type.blocktype.config.BlockType
                             .getAssetMap();
-                    long targetChunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.x(),
-                            blockPos.z());
-                    var targetChunk = world.getChunkIfLoaded(targetChunkIndex);
-                    if (targetChunk == null) {
+                    Ref<ChunkStore> sectionRef = world.getChunkStore().getChunkSectionReferenceAtBlock(
+                            blockPos.x(), blockPos.y(), blockPos.z());
+                    if (sectionRef == null || !sectionRef.isValid()) {
                         breakResultFuture.complete(BreakResult.failed("Chunk not loaded"));
                         return;
                     }
-                    int blockId = targetChunk.getBlock(blockPos.x(), blockPos.y(), blockPos.z());
+                    int blockId = new SectionReader(world.getChunkStore()).getBlock(
+                            blockPos.x(), blockPos.y(), blockPos.z());
                     String blockIdStr = "unknown";
                     var blockType = blockTypeAssetMap.getAsset(blockId);
                     if (blockType != null) {
@@ -5598,15 +5605,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                     // breaking
                     // This respects the equipped tool and doesn't trigger connected blocks (like
                     // whole trees)
-                    long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockPos.x(),
-                            blockPos.z());
                     var chunkStore = world.getChunkStore().getStore();
-                    Ref<ChunkStore> chunkRef = chunkStore.getExternalData().getChunkReference(chunkIndex);
-
-                    if (chunkRef == null || !chunkRef.isValid()) {
-                        breakResultFuture.complete(BreakResult.failed("Chunk not loaded"));
-                        return;
-                    }
 
                     // Get the held item for tool power calculation
                     ItemStack heldItemStack = null;
@@ -5674,6 +5673,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                         // Step 4: Apply actual block damage
                         broken = BlockHarvestUtils.performBlockDamage(
                                 entityRef,
+                                null, // impact entity (none for direct NPC block damage)
                                 blockPos,
                                 heldItemStack,
                                 null,
@@ -5681,7 +5681,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 false,
                                 1.0f,
                                 0,
-                                chunkRef,
+                                false, // isExplosion
+                                sectionRef,
                                 store,
                                 chunkStore);
                         attempts++;
@@ -5845,14 +5846,14 @@ public class HytaleServerAdapter implements HytaleAPI {
                         return;
                     }
 
-                    long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(blockX, blockZ);
-                    var chunk = world.getChunkIfLoaded(chunkIndex);
-                    if (chunk == null) {
+                    Ref<ChunkStore> sectionRef = world.getChunkStore().getChunkSectionReferenceAtBlock(
+                            blockX, blockY, blockZ);
+                    if (sectionRef == null || !sectionRef.isValid()) {
                         placeResultFuture.complete(PlaceResult.failed("Chunk not loaded"));
                         return;
                     }
 
-                    int existingBlockId = chunk.getBlock(blockX, blockY, blockZ);
+                    int existingBlockId = new SectionReader(world.getChunkStore()).getBlock(blockX, blockY, blockZ);
                     if (existingBlockId != 0) {
                         BlockType existingType = blockTypeAssetMap.getAsset(existingBlockId);
                         boolean isEmpty = existingType == null
@@ -5901,7 +5902,9 @@ public class HytaleServerAdapter implements HytaleAPI {
                             | PlaceBlockSettings.UPDATE_CONNECTIONS;
                     boolean placed;
                     try {
-                        placed = chunk.setBlock(blockX, blockY, blockZ, blockTypeKey, placeSettings);
+                        placed = BlockOperations.setBlock(world.getChunkStore(), sectionRef,
+                                blockX, blockY, blockZ, blockTypeIndex, blockTypeAssetMap.getAsset(blockTypeIndex),
+                                0, 0, placeSettings);
                     } catch (IllegalArgumentException e) {
                         // Refund consumed item
                         sourceContainer.setItemStackForSlot(sourceSlot, sourceStack);
@@ -6148,6 +6151,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                                     .getAssetMap();
                             var chunkStore = world.getChunkStore().getStore();
                             ItemStack heldItemStack = inventory.getItemInHand();
+                            SectionReader blockReader = new SectionReader(world.getChunkStore());
 
                             boolean harvestedMatchingBlock = false;
                             for (int x = centerX - maxOffset; x <= centerX + maxOffset
@@ -6161,14 +6165,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                                             continue;
                                         }
 
-                                        long chunkIndex = com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x,
-                                                z);
-                                        var chunk = world.getChunkIfLoaded(chunkIndex);
-                                        if (chunk == null) {
+                                        Ref<ChunkStore> sectionRef = world.getChunkStore()
+                                                .getChunkSectionReferenceAtBlock(x, y, z);
+                                        if (sectionRef == null || !sectionRef.isValid()) {
                                             continue;
                                         }
 
-                                        int blockTypeId = chunk.getBlock(x, y, z);
+                                        int blockTypeId = blockReader.getBlock(x, y, z);
                                         var blockType = blockTypeAssetMap != null
                                                 ? blockTypeAssetMap.getAsset(blockTypeId)
                                                 : null;
@@ -6177,17 +6180,12 @@ public class HytaleServerAdapter implements HytaleAPI {
                                             continue;
                                         }
 
-                                        Ref<ChunkStore> chunkRef = chunkStore.getExternalData()
-                                                .getChunkReference(chunkIndex);
-                                        if (chunkRef == null || !chunkRef.isValid()) {
-                                            continue;
-                                        }
-
                                         Vector3i blockPos = new Vector3i(x, y, z);
                                         boolean broken = false;
                                         for (int attempt = 0; attempt < 10 && !broken; attempt++) {
                                             broken = BlockHarvestUtils.performBlockDamage(
                                                     entityRef,
+                                                    null, // impact entity
                                                     blockPos,
                                                     heldItemStack,
                                                     null,
@@ -6195,7 +6193,8 @@ public class HytaleServerAdapter implements HytaleAPI {
                                                     false,
                                                     1.0f,
                                                     0,
-                                                    chunkRef,
+                                                    false, // isExplosion
+                                                    sectionRef,
                                                     store,
                                                     chunkStore);
                                         }
@@ -6978,19 +6977,19 @@ public class HytaleServerAdapter implements HytaleAPI {
                     return;
                 }
 
-                var chunk = world.getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z));
-                if (chunk == null) {
+                Ref<ChunkStore> sectionRef = world.getChunkStore().getChunkSectionReferenceAtBlock(x, y, z);
+                if (sectionRef == null || !sectionRef.isValid()) {
                     future.complete(Optional.of(ContainerInventoryResult.failure("Container chunk is not loaded")));
                     return;
                 }
 
-                Holder<ChunkStore> blockHolder = chunk.getBlockComponentHolder(x, y, z);
-                if (blockHolder == null) {
+                Ref<ChunkStore> blockRef = BlockModule.getBlockEntity(world, x, y, z);
+                if (blockRef == null) {
                     future.complete(Optional.of(ContainerInventoryResult.failure("Block has no container state")));
                     return;
                 }
-                ItemContainerBlock containerBlock = (ItemContainerBlock) blockHolder
-                        .getComponent(ItemContainerBlock.getComponentType());
+                ItemContainerBlock containerBlock = world.getChunkStore().getStore()
+                        .getComponent(blockRef, ItemContainerBlock.getComponentType());
                 if (containerBlock != null) {
                     var container = containerBlock.getItemContainer();
 
@@ -7060,19 +7059,19 @@ public class HytaleServerAdapter implements HytaleAPI {
                     return;
                 }
 
-                var chunk = world.getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z));
-                if (chunk == null) {
+                Ref<ChunkStore> sectionRef = world.getChunkStore().getChunkSectionReferenceAtBlock(x, y, z);
+                if (sectionRef == null || !sectionRef.isValid()) {
                     future.complete(Optional.of(ContainerActionResult.failure("Container chunk is not loaded")));
                     return;
                 }
 
-                Holder<ChunkStore> blockHolder = chunk.getBlockComponentHolder(x, y, z);
-                if (blockHolder == null) {
+                Ref<ChunkStore> blockRef = BlockModule.getBlockEntity(world, x, y, z);
+                if (blockRef == null) {
                     future.complete(Optional.of(ContainerActionResult.failure("Block has no container state")));
                     return;
                 }
-                ItemContainerBlock containerBlock = (ItemContainerBlock) blockHolder
-                        .getComponent(ItemContainerBlock.getComponentType());
+                ItemContainerBlock containerBlock = world.getChunkStore().getStore()
+                        .getComponent(blockRef, ItemContainerBlock.getComponentType());
                 if (containerBlock == null) {
                     future.complete(Optional.of(ContainerActionResult.failure("Block is not a container")));
                     return;
@@ -7227,19 +7226,19 @@ public class HytaleServerAdapter implements HytaleAPI {
                     return;
                 }
 
-                var chunk = world.getChunkIfLoaded(com.hypixel.hytale.math.util.ChunkUtil.indexChunkFromBlock(x, z));
-                if (chunk == null) {
+                Ref<ChunkStore> sectionRef = world.getChunkStore().getChunkSectionReferenceAtBlock(x, y, z);
+                if (sectionRef == null || !sectionRef.isValid()) {
                     future.complete(Optional.of(ContainerActionResult.failure("Container chunk is not loaded")));
                     return;
                 }
 
-                Holder<ChunkStore> blockHolder = chunk.getBlockComponentHolder(x, y, z);
-                if (blockHolder == null) {
+                Ref<ChunkStore> blockRef = BlockModule.getBlockEntity(world, x, y, z);
+                if (blockRef == null) {
                     future.complete(Optional.of(ContainerActionResult.failure("Block has no container state")));
                     return;
                 }
-                ItemContainerBlock containerBlock = (ItemContainerBlock) blockHolder
-                        .getComponent(ItemContainerBlock.getComponentType());
+                ItemContainerBlock containerBlock = world.getChunkStore().getStore()
+                        .getComponent(blockRef, ItemContainerBlock.getComponentType());
                 if (containerBlock == null) {
                     future.complete(Optional.of(ContainerActionResult.failure("Block is not a container")));
                     return;
