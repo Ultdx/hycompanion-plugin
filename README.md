@@ -94,6 +94,8 @@ The build resolves the official Hytale Server API from Maven. The JAR in `libs/`
 
 If `AssetModule` still reports a target of `=0.5.6`, check the dynamic role pack's `mods/dev.hycompanion_Hycompanion/manifest.json` as well as the installed plugin JAR. Its `ServerVersion` must be `>=0.7.0`. The plugin synchronizes this pack manifest from its loaded metadata; restart the server if the pack was already discovered with the old value.
 
+After updating coordinate movement, synchronize NPC roles with `/hycompanion sync` and restart the server to load the generated `MoveBehavior`. Keep the existing configuration and role pack folder to preserve your key. If an existing NPC reports `movement_role_unavailable`, respawn it after loading the updated role. `move_to` now confirms arrival only within 1.5 blocks of the requested position; blocked paths return a failure and the actual NPC position.
+
 ### 3. Install
 
 1. Copy the JAR to your Hytale server's `plugins/` folder

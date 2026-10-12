@@ -8,6 +8,7 @@ import com.hypixel.hytale.component.CommandBuffer;
 import com.hypixel.hytale.component.Ref;
 import com.hypixel.hytale.component.Store;
 import com.hypixel.hytale.math.util.TrigMathUtil;
+import com.hypixel.hytale.math.shape.Box;
 import com.hypixel.hytale.math.vector.Transform;
 import org.joml.Vector3d;
 import org.joml.Vector3i;
@@ -16,6 +17,7 @@ import com.hypixel.hytale.server.core.Message;
 import com.hypixel.hytale.server.core.NameMatching;
 import com.hypixel.hytale.server.core.asset.type.weather.config.Weather;
 import com.hypixel.hytale.server.core.modules.entity.component.HeadRotation;
+import com.hypixel.hytale.server.core.modules.entity.component.BoundingBox;
 import com.hypixel.hytale.server.core.modules.entity.component.TransformComponent;
 import com.hypixel.hytale.server.core.modules.entity.teleport.Teleport;
 import com.hypixel.hytale.server.core.modules.time.WorldTimeResource;
@@ -67,6 +69,7 @@ import dev.hycompanion.plugin.api.results.ContainerInventoryResult;
 import dev.hycompanion.plugin.core.npc.NpcData;
 import dev.hycompanion.plugin.core.npc.NpcInstanceData;
 import dev.hycompanion.plugin.core.npc.NpcMoveResult;
+import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
 import dev.hycompanion.plugin.integration.PluginIntegrationManager;
 import dev.hycompanion.plugin.integration.SpeechBubbleIntegration;
 import dev.hycompanion.plugin.network.PacketDispatchUtil;
@@ -1152,46 +1155,28 @@ public class HytaleServerAdapter implements HytaleAPI {
             try {
                 Store<EntityStore> store = entityRef.getStore();
 
-                // Get the correct world for this NPC, not the default world
-                String worldName = npcInstanceData.spawnLocation() != null ? npcInstanceData.spawnLocation().world()
-                        : null;
-                World resolvedWorld = worldName != null ? Universe.get().getWorld(worldName) : null;
-                if (resolvedWorld == null) {
-                    resolvedWorld = Universe.get().getDefaultWorld();
-                    logger.warn("[Hycompanion] moveNpcTo: Could not find world '" + worldName
-                            + "' for NPC, falling back to default world");
-                }
+                World resolvedWorld = store.getExternalData().getWorld();
 
                 if (resolvedWorld != null) {
                     final World world = resolvedWorld;
                     world.execute(() -> {
                         try {
-                            // 1. Spawn invisible target entity (Projectile with NetworkId + BoundingBox)
+                            // A stationary server-only marker: no projectile asset, physics, or client model.
+                            // Seek requires a BoundingBox even for an intangible target.
                             Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
-
-                            ProjectileComponent projectile = new ProjectileComponent("Projectile");
-                            holder.putComponent(ProjectileComponent.getComponentType(), projectile);
 
                             Vector3d pos = new Vector3d(location.x(), location.y(), location.z());
                             holder.putComponent(TransformComponent.getComponentType(),
                                     new TransformComponent(pos, Rotation3f.ZERO));
 
                             holder.ensureComponent(UUIDComponent.getComponentType());
+                            holder.putComponent(BoundingBox.getComponentType(),
+                                    new BoundingBox(Box.horizontallyCentered(0.1, 0.1, 0.1)));
 
                             // Keep it intangible so NPC doesn't collide
                             holder.ensureComponent(Intangible.getComponentType());
 
-                            // Add NetworkId so it registers in spatial systems and client
-                            // (Invisible but valid for AI)
-                            holder.addComponent(NetworkId.getComponentType(),
-                                    new NetworkId(
-                                            world.getEntityStore().getStore().getExternalData().takeNextNetworkId()));
-
-                            // Basic initialization
-                            projectile.initialize();
-
-                            Ref<EntityStore> targetRef = world.getEntityStore().getStore().addEntity(holder,
-                                    AddReason.SPAWN);
+                            Ref<EntityStore> targetRef = store.addEntity(holder, AddReason.SPAWN);
 
                             if (targetRef != null && targetRef.isValid()) {
                                 movementTargetEntities.put(npcInstanceId, targetRef);
@@ -1218,15 +1203,33 @@ public class HytaleServerAdapter implements HytaleAPI {
                                         MarkedEntitySupport.get(entityRef, store).setMarkedEntity(
                                                 MarkedEntitySupport.DEFAULT_TARGET_SLOT, targetRef);
 
-                                        // 4. Set state to Follow
-                                        try {
-                                            StateSupport.get(entityRef, store).setState(entityRef, "Follow", null, store);
-                                        } catch (Exception e) {
-                                            StateSupport.get(entityRef, store).setState(entityRef, "Follow", "Default", store);
+                                        // Hytale silently ignores unknown states/target slots; verify both.
+                                        StateSupport stateSupport = StateSupport.get(entityRef, store);
+                                        int moveState = stateSupport.getStateHelper()
+                                                .getStateIndex(NpcMovementProgress.STATE);
+                                        if (moveState < 0 || !targetRef.equals(MarkedEntitySupport.get(entityRef, store)
+                                                .getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT))) {
+                                            logger.warn("[Hycompanion] Movement role or target slot unavailable for "
+                                                    + npcInstanceId + "; regenerate the role and respawn the NPC");
+                                            result.complete(NpcMoveResult.failed("movement_role_unavailable"));
+                                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
+                                            return;
+                                        }
+                                        stateSupport.setState(entityRef, NpcMovementProgress.STATE, null, store);
+                                        if (stateSupport.getStateIndex() != moveState) {
+                                            result.complete(NpcMoveResult.failed("movement_state_unavailable"));
+                                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
+                                            return;
                                         }
                                         busyNpcs.add(npcInstanceId);
-                                        logger.info("[Hycompanion] NPC started following target marker to " + location);
+                                        logger.info("[Hycompanion] NPC started moving to stationary marker at " + location);
+                                    } else {
+                                        result.complete(NpcMoveResult.failed("npc_role_unavailable"));
+                                        cleanupMovement(npcInstanceId);
                                     }
+                                } else {
+                                    result.complete(NpcMoveResult.failed("npc_component_unavailable"));
+                                    cleanupMovement(npcInstanceId);
                                 }
                             } else {
                                 logger.error("Failed to spawn movement target entity");
@@ -1236,16 +1239,13 @@ public class HytaleServerAdapter implements HytaleAPI {
                             logger.error("Error setting up move: " + e.getMessage());
                             Sentry.captureException(e);
                             result.complete(NpcMoveResult.failed("error: " + e.getMessage()));
+                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
                         }
                     });
 
                     // Start monitoring
                     AtomicInteger ticks = new AtomicInteger(0);
-                    // Track position for stuck detection: [x, y, z, timestamp_ms]
-                    AtomicReference<double[]> lastPosition = new AtomicReference<>(new double[] { 0, 0, 0, 0 });
-                    // Stuck detection: 3 seconds without significant movement
-                    final long STUCK_TIMEOUT_MS = 3000;
-                    final double STUCK_DISTANCE_THRESHOLD = 0.2; // 0.2 blocks = 20cm
+                    NpcMovementProgress progress = new NpcMovementProgress(location);
                     // Absolute maximum timeout: 5 minutes (for very long distances)
                     final int MAX_TICKS = 5 * 60 * 4; // 5 min * 60 sec * 4 ticks/sec (250ms interval)
 
@@ -1281,7 +1281,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                                                 TransformComponent.getComponentType());
                                         if (t != null) {
                                             Vector3d p = t.getPosition();
-                                            finalLoc = Location.of(p.x(), p.y(), p.z(), "world");
+                                            finalLoc = Location.of(p.x(), p.y(), p.z(), world.getName());
                                         }
                                     }
                                     result.complete(NpcMoveResult.timeout(finalLoc));
@@ -1307,6 +1307,12 @@ public class HytaleServerAdapter implements HytaleAPI {
                                     cleanupMovement(npcInstanceId);
                                     return;
                                 }
+                                Ref<EntityStore> marker = movementTargetEntities.get(npcInstanceId);
+                                if (marker == null || !marker.isValid()) {
+                                    result.complete(NpcMoveResult.failed("movement_target_lost"));
+                                    cleanupMovementAndResetState(npcInstanceId, entityRef, store);
+                                    return;
+                                }
                                 TransformComponent t = store.getComponent(entityRef,
                                         TransformComponent.getComponentType());
                                 if (t == null) {
@@ -1324,64 +1330,24 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 double dz = currentZ - location.z();
                                 double distSq = dx * dx + dy * dy + dz * dz;
 
-                                // Check arrival
                                 double distance = Math.sqrt(distSq);
-
-                                // Threshold: 1.5 blocks actual distance
-                                if (distSq <= 2.25) {
+                                Location finalLoc = Location.of(currentX, currentY, currentZ, world.getName());
+                                NpcMovementProgress.Status movementStatus = progress.observe(finalLoc,
+                                        TimeUnit.NANOSECONDS.toMillis(System.nanoTime()));
+                                if (movementStatus == NpcMovementProgress.Status.ARRIVED) {
                                     logger.info("[Hycompanion] NPC arrived at destination, distance=" +
                                             String.format("%.2f", distance) + " blocks");
-                                    Location finalLoc = Location.of(currentX, currentY, currentZ, "world");
                                     result.complete(NpcMoveResult.success(finalLoc));
                                     cleanupMovementAndResetState(npcInstanceId, entityRef, store);
                                     return;
                                 }
-
-                                // Stuck detection: check if NPC hasn't moved significantly
-                                double[] lastPos = lastPosition.get();
-                                long now = System.currentTimeMillis();
-
-                                if (lastPos[3] == 0) {
-                                    // First position recording
-                                    lastPosition.set(new double[] { currentX, currentY, currentZ, (double) now });
-                                } else {
-                                    double moveDx = currentX - lastPos[0];
-                                    double moveDy = currentY - lastPos[1];
-                                    double moveDz = currentZ - lastPos[2];
-                                    double movedDist = Math.sqrt(moveDx * moveDx + moveDy * moveDy + moveDz * moveDz);
-
-                                    if (movedDist > STUCK_DISTANCE_THRESHOLD) {
-                                        // NPC moved significantly, update last position
-                                        lastPosition.set(new double[] { currentX, currentY, currentZ, (double) now });
-                                    } else {
-                                        // NPC hasn't moved much, check if stuck for 3+ seconds
-                                        long timeSinceLastMove = now - (long) lastPos[3];
-                                        if (timeSinceLastMove > STUCK_TIMEOUT_MS) {
-                                            // Extra arrival check: If it's less than 5 blocks, consider it arrived.
-                                            // The Hytale AI pathfinding often struggles perfectly centering large
-                                            // models.
-                                            if (distSq <= 25.0) {
-                                                logger.info(
-                                                        "[Hycompanion] NPC practically arrived, stuck within 5 blocks. distance="
-                                                                +
-                                                                String.format("%.2f", distance) + " blocks");
-                                                Location finalLoc = Location.of(currentX, currentY, currentZ, "world");
-                                                result.complete(NpcMoveResult.success(finalLoc));
-                                                cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                                return;
-                                            }
-
-                                            logger.info(
-                                                    "[Hycompanion] NPC stuck detected! No significant movement for " +
-                                                            (timeSinceLastMove / 1000) + "s, distance=" +
-                                                            String.format("%.2f", distance) + " blocks from target");
-
-                                            Location finalLoc = Location.of(currentX, currentY, currentZ, "world");
-                                            result.complete(NpcMoveResult.timeout(finalLoc));
-                                            cleanupMovementAndResetState(npcInstanceId, entityRef, store);
-                                            return;
-                                        }
-                                    }
+                                if (movementStatus == NpcMovementProgress.Status.STUCK) {
+                                    logger.info("[Hycompanion] NPC stuck: no significant movement for 3s, distance="
+                                            + String.format("%.2f", distance) + " blocks from target, state="
+                                            + StateSupport.get(entityRef, store).getStateName());
+                                    result.complete(NpcMoveResult.timeout(finalLoc));
+                                    cleanupMovementAndResetState(npcInstanceId, entityRef, store);
+                                    return;
                                 }
 
                                 // Progress logging every 5 seconds (20 ticks * 250ms)

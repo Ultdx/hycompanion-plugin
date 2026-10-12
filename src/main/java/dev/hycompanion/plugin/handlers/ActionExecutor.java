@@ -510,6 +510,7 @@ public class ActionExecutor {
         hytaleAPI.moveNpcTo(npcInstanceId, destination).thenAccept(result -> {
             if (ack != null) {
                 org.json.JSONObject response = new org.json.JSONObject();
+                response.put("arrivalTolerance", dev.hycompanion.plugin.core.npc.NpcMovementProgress.ARRIVAL_DISTANCE);
 
                 // Map result status to response format expected by backend
                 String status = result.status();
@@ -530,6 +531,7 @@ public class ActionExecutor {
                     response.put("x", result.finalLocation().x());
                     response.put("y", result.finalLocation().y());
                     response.put("z", result.finalLocation().z());
+                    response.put("distanceToTarget", result.finalLocation().distanceTo(destination));
                 }
 
                 ack.call(response);

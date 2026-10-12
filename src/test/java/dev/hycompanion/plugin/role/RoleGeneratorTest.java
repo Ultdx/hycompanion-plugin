@@ -3,6 +3,7 @@ package dev.hycompanion.plugin.role;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.hycompanion.plugin.utils.PluginLogger;
+import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -68,6 +69,62 @@ class RoleGeneratorTest {
     private RoleGenerator generator(Path pack) {
         return new RoleGenerator(pack, directory.resolve("data"), new PluginLogger("RoleGeneratorTest"),
                 "1.1.8", ">=0.7.0");
+    }
+
+    @Test
+    void coordinateMovementDoesNotInheritThePlayerFollowDistance() throws Exception {
+        Path pack = directory.resolve("pack");
+        RoleGenerator.NpcRoleData npc = companion(new String[] {"idle", "follow", "wander"});
+        npc.parameters = new org.json.JSONObject()
+                .put("FollowDistance", new org.json.JSONObject().put("Value", 10.0));
+        assertTrue(generator(pack).generateAndCacheRole(npc));
+        JsonObject role = readRole(pack);
+        JsonObject move = instruction(role, "MoveBehavior");
+        JsonObject follow = instruction(role, "FollowBehavior");
+
+        assertEquals(NpcMovementProgress.STATE, move.getAsJsonObject("Sensor")
+                .getAsJsonArray("Sensors").get(0).getAsJsonObject().get("State").getAsString());
+        assertEquals("Target", move.getAsJsonObject("Sensor")
+                .getAsJsonArray("Sensors").get(1).getAsJsonObject().get("Type").getAsString());
+        assertTrue(move.getAsJsonObject("BodyMotion").get("StopDistance").getAsDouble()
+                < NpcMovementProgress.ARRIVAL_DISTANCE);
+        assertFalse(move.getAsJsonObject("BodyMotion").get("AdjustRangeByHitboxSize").getAsBoolean());
+        assertEquals(10.0, follow.getAsJsonObject("BodyMotion").get("StopDistance").getAsDouble());
+        assertEquals("MoveBehavior", role.getAsJsonArray("Instructions").get(0)
+                .getAsJsonObject().get("Name").getAsString());
+        assertEquals("Idle", role.get("StartState").getAsString());
+    }
+
+    @Test
+    void idlePresetStillSupportsExplicitCoordinateMovement() throws Exception {
+        Path pack = directory.resolve("pack");
+        assertTrue(generator(pack).generateAndCacheRole(companion(new String[] {"idle"})));
+        JsonObject role = readRole(pack);
+        assertNotNull(instruction(role, "MoveBehavior"));
+        assertNull(instruction(role, "FollowBehavior"));
+        assertEquals("Idle", role.get("StartState").getAsString());
+    }
+
+    private RoleGenerator.NpcRoleData companion(String[] presets) {
+        RoleGenerator.NpcRoleData npc = new RoleGenerator.NpcRoleData();
+        npc.externalId = "companion";
+        npc.displayName = "Villager";
+        npc.reference = "Template_Hycompanion_NPC";
+        npc.behaviorPresets = presets;
+        return npc;
+    }
+
+    private JsonObject readRole(Path pack) throws Exception {
+        return JsonParser.parseString(Files.readString(pack.resolve("Server/NPC/Roles/companion.json")))
+                .getAsJsonObject();
+    }
+
+    private JsonObject instruction(JsonObject role, String name) {
+        for (var instruction : role.getAsJsonArray("Instructions")) {
+            JsonObject object = instruction.getAsJsonObject();
+            if (name.equals(object.get("Name").getAsString())) return object;
+        }
+        return null;
     }
 
     private JsonObject readManifest(Path pack) throws Exception {

@@ -5,6 +5,7 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import dev.hycompanion.plugin.utils.PluginLogger;
+import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -959,6 +960,30 @@ public class RoleGenerator {
         }
 
         // Generate instructions for each preset (order matters - higher priority first)
+
+        // Explicit move_to commands need their own stopping distance, independent of player following.
+        JsonObject moveInstruction = new JsonObject();
+        moveInstruction.addProperty("Name", "MoveBehavior");
+        JsonObject moveSensor = new JsonObject();
+        moveSensor.addProperty("Type", "And");
+        com.google.gson.JsonArray moveSensors = new com.google.gson.JsonArray();
+        JsonObject moveState = new JsonObject();
+        moveState.addProperty("Type", "State");
+        moveState.addProperty("State", NpcMovementProgress.STATE);
+        moveSensors.add(moveState);
+        JsonObject moveTarget = new JsonObject();
+        moveTarget.addProperty("Type", "Target");
+        moveSensors.add(moveTarget);
+        moveSensor.add("Sensors", moveSensors);
+        moveInstruction.add("Sensor", moveSensor);
+        JsonObject moveBody = new JsonObject();
+        moveBody.addProperty("Type", "Seek");
+        moveBody.addProperty("StopDistance", NpcMovementProgress.STOP_DISTANCE);
+        moveBody.addProperty("AdjustRangeByHitboxSize", false);
+        moveBody.addProperty("SlowDownDistance", 2.0);
+        moveBody.addProperty("AbortDistance", 80.0);
+        moveInstruction.add("BodyMotion", moveBody);
+        instructions.add(moveInstruction);
 
         // 1. Follow Behavior (Higher Priority)
         // Only add if "follow" preset is present
