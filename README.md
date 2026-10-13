@@ -98,6 +98,8 @@ After updating coordinate movement, synchronize NPC roles with `/hycompanion syn
 
 Cached or inherited roles that only expose `Follow` retain that movement behavior. Their configured follow distance can stop the NPC outside the arrival tolerance; reload generated roles for precise coordinate movement. Switching commands interrupts the pending move explicitly, and previous callbacks do not reset a later movement or player follow target.
 
+If startup reports `State sensor or State setter action/motion exists without accompanying state/setter: Move`, install the corrected JAR and restart. During setup, the plugin repairs the generated `MoveBehavior` in existing role files and the cache before Hytale validates them, including copied asset packs and offline starts. Your key and other role settings are preserved.
+
 ### 3. Install
 
 1. Copy the JAR to your Hytale server's `plugins/` folder

@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased — 2026-10-12
+## Unreleased — 2026-10-13
+
+### Fixed
+
+- Declare the externally controlled `Move` state with `IgnoreMissingSetState`, fixing Hytale's "State sensor or State setter action/motion exists without accompanying state/setter: Move" validation error introduced by the coordinate movement update.
+- Repair existing generated `MoveBehavior` roles in the asset pack and cache during setup, before NPC asset validation, including copied packs and offline starts. Preserve other role settings and custom instructions.
+
+### Validation
+
+- Reproduced the reported error using the official 0.7.0 `BuilderSensorState` and `StateMappingHelper`, then verified the corrected sensor across standalone and legacy roles with idle, follow and wander presets.
+- `mvn -o verify -Dsentry.skip=true` passed all 27 tests and rebuilt the Hytale plugin JAR. Tests also cover cached and copied pack upgrades, preserving settings and repeat startup.
+- Reviewed the official 0.7.0 source chain for state validation, state changes, marked targets, target position providers, combined sensors and Seek movement; the new extraction's JAR matches the installed Maven API and `libs/HytaleServer.jar`.
+- Live pathfinding and harvesting still require validation on the server.
+
+## Migration work — 2026-10-12
 
 ### Changed
 
@@ -37,6 +51,6 @@
 - Verified the packaged manifest, server compatibility range and loading of all 72 plugin classes against the official server API.
 - Regression tests cover upgrading an old asset pack manifest, preserving custom metadata and role files, and creating a manifest on first startup.
 - `mvn -o verify -Dsentry.skip=true` passed all 17 tests and rebuilt the Hytale JAR. Movement tests replay the stationary positions from the mushroom-gathering logs and check progress, stalls, vertical distance, independence from player follow distance, legacy state selection, interruption, late resource registration and cleanup before completion callbacks.
-- Compared nine key movement/state/target classes byte-for-byte between the supplied pre-release JAR and the official 0.7.0 JAR; all nine match. Full official source review remains pending the new extraction.
+- Compared nine key movement/state/target classes byte-for-byte between the supplied pre-release JAR and the official 0.7.0 JAR; all nine match. The official source review followed on 2026-10-13.
 - Verified the scan availability and supported height semantics against the official 0.7.0 server bytecode; backend regression tests cover mushrooms, chests, dropped items and scan failures.
 - In-game validation is still pending.

@@ -208,6 +208,10 @@
                 <version>3.2.2</version>
                 <configuration>
                     <argLine>--enable-preview</argLine>
+                    <systemPropertyVariables>
+                        <!-- Server builders require this manager before JUL is initialized. -->
+                        <java.util.logging.manager>com.hypixel.hytale.logger.backend.HytaleLogManager</java.util.logging.manager>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
 

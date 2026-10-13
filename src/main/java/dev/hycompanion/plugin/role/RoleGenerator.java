@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonPrimitive;
 import dev.hycompanion.plugin.utils.PluginLogger;
 import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
 
@@ -130,6 +132,14 @@ public class RoleGenerator {
         ensureModManifest();
 
         try {
+            // A copied asset pack may have generated roles without their cache.
+            if (Files.isDirectory(rolesDirectory)) {
+                try (var stream = Files.list(rolesDirectory)) {
+                    for (Path roleFile : stream.toList()) {
+                        if (roleFile.toString().endsWith(".json")) upgradeMovementRole(roleFile);
+                    }
+                }
+            }
             if (!Files.exists(cacheDirectory)) {
                 logger.info("No cached roles found (first run)");
                 return 0;
@@ -143,6 +153,7 @@ public class RoleGenerator {
             try (var stream = Files.list(cacheDirectory)) {
                 for (Path cachedFile : stream.toList()) {
                     if (cachedFile.toString().endsWith(".json")) {
+                        upgradeMovementRole(cachedFile);
                         Path targetFile = rolesDirectory.resolve(cachedFile.getFileName());
                         Files.copy(cachedFile, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                         copied++;
@@ -161,6 +172,45 @@ public class RoleGenerator {
         } catch (Exception e) {
             logger.warn("Failed to load cached roles: " + e.getMessage());
             return 0;
+        }
+    }
+
+    /** Repair the generated Move sensor before Hytale validates roles, including offline startups. */
+    private void upgradeMovementRole(Path roleFile) throws IOException {
+        String content = Files.readString(roleFile);
+        JsonElement parsed;
+        try {
+            parsed = GSON.fromJson(content, JsonElement.class);
+        } catch (JsonParseException e) {
+            logger.warn("Cannot upgrade movement role: " + roleFile.getFileName());
+            return;
+        }
+        if (parsed == null || !parsed.isJsonObject()) return;
+        JsonElement instructions = parsed.getAsJsonObject().get("Instructions");
+        if (instructions == null || !instructions.isJsonArray()) return;
+        boolean changed = false;
+        for (JsonElement instruction : instructions.getAsJsonArray()) {
+            if (!instruction.isJsonObject()) continue;
+            JsonObject object = instruction.getAsJsonObject();
+            if (!new JsonPrimitive("MoveBehavior").equals(object.get("Name"))) continue;
+            JsonElement sensor = object.get("Sensor");
+            if (sensor == null || !sensor.isJsonObject()) continue;
+            JsonElement sensors = sensor.getAsJsonObject().get("Sensors");
+            if (sensors == null || !sensors.isJsonArray()) continue;
+            for (JsonElement child : sensors.getAsJsonArray()) {
+                if (!child.isJsonObject()) continue;
+                JsonObject state = child.getAsJsonObject();
+                if (new JsonPrimitive("State").equals(state.get("Type"))
+                        && new JsonPrimitive(NpcMovementProgress.STATE).equals(state.get("State"))
+                        && !new JsonPrimitive(true).equals(state.get("IgnoreMissingSetState"))) {
+                    state.addProperty("IgnoreMissingSetState", true);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            Files.writeString(roleFile, GSON.toJson(parsed));
+            logger.info("Updated externally controlled Move state in role: " + roleFile.getFileName());
         }
     }
 
@@ -970,6 +1020,8 @@ public class RoleGenerator {
         JsonObject moveState = new JsonObject();
         moveState.addProperty("Type", "State");
         moveState.addProperty("State", NpcMovementProgress.STATE);
+        // move_to sets this state through StateSupport, outside the role's action graph.
+        moveState.addProperty("IgnoreMissingSetState", true);
         moveSensors.add(moveState);
         JsonObject moveTarget = new JsonObject();
         moveTarget.addProperty("Type", "Target");
