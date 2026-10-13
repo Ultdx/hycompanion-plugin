@@ -260,7 +260,7 @@ public class RoleGenerator {
                 try {
                     payload.put("apiKey", apiKey);
                     var serverInfo = new org.json.JSONObject();
-                    serverInfo.put("version", "1.1.8-SNAPSHOT");
+                    serverInfo.put("version", pluginVersion);
                     serverInfo.put("playerCount", 0);
                     payload.put("serverInfo", serverInfo);
                 } catch (Exception e) {

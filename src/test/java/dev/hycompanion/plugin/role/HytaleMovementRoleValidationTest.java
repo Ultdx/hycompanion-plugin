@@ -181,7 +181,7 @@ class HytaleMovementRoleValidationTest {
 
     private RoleGenerator generator() {
         return new RoleGenerator(directory.resolve("pack"), directory.resolve("data"),
-                new PluginLogger("HytaleMovementRoleValidationTest"), "1.1.8", ">=0.7.0");
+                new PluginLogger("HytaleMovementRoleValidationTest"), "1.1.9", ">=0.7.0");
     }
 
     private JsonObject generatedMoveSensor(boolean legacy, String[] presets) throws Exception {

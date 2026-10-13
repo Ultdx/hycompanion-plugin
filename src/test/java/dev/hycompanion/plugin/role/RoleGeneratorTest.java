@@ -40,7 +40,7 @@ class RoleGeneratorTest {
 
         JsonObject manifest = readManifest(pack);
         assertEquals(">=0.7.0", manifest.get("ServerVersion").getAsString());
-        assertEquals("1.1.8", manifest.get("Version").getAsString());
+        assertEquals("1.1.9", manifest.get("Version").getAsString());
         assertEquals("Custom role pack description", manifest.get("Description").getAsString());
         assertEquals("Server owner", manifest.getAsJsonArray("Authors").get(0)
                 .getAsJsonObject().get("Name").getAsString());
@@ -63,14 +63,14 @@ class RoleGeneratorTest {
         JsonObject manifest = readManifest(pack);
         assertEquals("dev.hycompanion", manifest.get("Group").getAsString());
         assertEquals("Hycompanion", manifest.get("Name").getAsString());
-        assertEquals("1.1.8", manifest.get("Version").getAsString());
+        assertEquals("1.1.9", manifest.get("Version").getAsString());
         assertEquals(">=0.7.0", manifest.get("ServerVersion").getAsString());
         assertTrue(generator.isManifestCreatedThisSession());
     }
 
     private RoleGenerator generator(Path pack) {
         return new RoleGenerator(pack, directory.resolve("data"), new PluginLogger("RoleGeneratorTest"),
-                "1.1.8", ">=0.7.0");
+                "1.1.9", ">=0.7.0");
     }
 
     @Test

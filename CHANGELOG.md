@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased — 2026-10-13
+## 1.1.9 — 2026-10-13
+
+### Changed
+
+- Bump the plugin version from 1.1.8 to 1.1.9, matching the Maven artifact, packaged manifests, runtime version and documentation. Keep the Hytale Server API at 0.7.0.
+- Report the loaded plugin version when fetching NPC roles during startup instead of a separate hardcoded snapshot version.
 
 ### Fixed
 
@@ -14,6 +19,7 @@
 
 ### Validation
 
+- Verified release 1.1.9 in the packaged JSON/YAML metadata and both compiled entry points; Hytale compatibility remains `>=0.7.0`.
 - Reproduced the reported error using the official 0.7.0 `BuilderSensorState` and `StateMappingHelper`, then verified the corrected sensor across standalone and legacy roles with idle, follow and wander presets.
 - Reproduced rejection of the old movement marker with the official 0.7.0 `EntityDetectionUtil.isDetectableByNPCs` method and verified that the production marker factory passes the same rule. Tests also verify the destination, UUID and bounding box.
 - `mvn -o verify -Dsentry.skip=true` passed all 43 tests and rebuilt the Hytale plugin JAR. Tests cover target detectability, the official server's coordinate sensor parser and position provider, both affected NPC profiles, bounded path startup, cached and copied pack upgrades, custom settings and repeat startup.

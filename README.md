@@ -2,7 +2,7 @@
 
 **AI-powered NPC companion system for Hytale servers**
 
-[![Version](https://img.shields.io/badge/version-1.1.0--SNAPSHOT-blue.svg)](https://github.com/hycompanion/hycompanion-plugin)
+[![Version](https://img.shields.io/badge/version-1.1.9-blue.svg)](https://github.com/hycompanion/hycompanion-plugin)
 [![Java](https://img.shields.io/badge/java-25-orange.svg)](https://openjdk.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Backend](https://img.shields.io/badge/backend-MIT-green.svg)](https://github.com/hycompanion/hycompanion-backend)
@@ -88,7 +88,7 @@ compile-plugin.bat
 compile-plugin.bat --skip-sentry
 ```
 
-The Hytale plugin JAR will be in `target/hycompanion-hytale.jar`. The standalone bundle is `target/hycompanion-plugin-1.1.8-jar-with-dependencies.jar`.
+The Hytale plugin JAR will be in `target/hycompanion-hytale.jar`. The standalone bundle is `target/hycompanion-plugin-1.1.9-jar-with-dependencies.jar`.
 
 The build resolves the official Hytale Server API from Maven. The JAR in `libs/` is not installed over that dependency.
 
