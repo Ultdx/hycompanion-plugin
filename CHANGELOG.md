@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Remove `Intangible` from the stationary coordinate movement target. Hytale's pre-behavior tick rejects intangible marked entities and clears `LockedTarget` before `MoveBehavior` can run, causing an idle NPC, `motion=null` and `targetLocked=false` until timeout. The target still has no model or network components.
 - Feed coordinate `move_to` targets through Hytale's native `ReadPosition` sensor, avoiding the live-entity movement requirements of a stationary marker. Keep player following on its existing `Target` sensor.
 - Upgrade unconfigured generated `MoveBehavior` targets in cached roles and copied asset packs before loading. Preserve custom target settings and other role data.
 - Allow up to 10 seconds for initial path computation while the engine reports `PROGRESSING`; retain the 3-second stall timeout after movement starts or when navigation is not progressing.
@@ -14,7 +15,8 @@
 ### Validation
 
 - Reproduced the reported error using the official 0.7.0 `BuilderSensorState` and `StateMappingHelper`, then verified the corrected sensor across standalone and legacy roles with idle, follow and wander presets.
-- `mvn -o verify -Dsentry.skip=true` passed all 41 tests and rebuilt the Hytale plugin JAR. Tests cover the official server's coordinate sensor parser and position provider, both affected NPC profiles, bounded path startup, cached and copied pack upgrades, custom settings and repeat startup.
+- Reproduced rejection of the old movement marker with the official 0.7.0 `EntityDetectionUtil.isDetectableByNPCs` method and verified that the production marker factory passes the same rule. Tests also verify the destination, UUID and bounding box.
+- `mvn -o verify -Dsentry.skip=true` passed all 43 tests and rebuilt the Hytale plugin JAR. Tests cover target detectability, the official server's coordinate sensor parser and position provider, both affected NPC profiles, bounded path startup, cached and copied pack upgrades, custom settings and repeat startup.
 - Reviewed the official 0.7.0 source chain for state validation, state changes, marked targets, target position providers, combined sensors and Seek movement; the new extraction's JAR matches the installed Maven API and `libs/HytaleServer.jar`.
 - Live pathfinding and harvesting still require validation on the server.
 
@@ -35,7 +37,7 @@
 - Keep each movement's marker, monitor and pending result together. Replacement, player following, stopping, NPC removal, teleportation and shutdown now interrupt the movement explicitly; queued callbacks cannot clean up a newer command.
 - Restore compatibility with cached or inherited roles that expose `Follow` without the new `Move` state. Arrival still requires the observed position to be within 1.5 blocks; reload generated roles for the precise 1-block stopping distance.
 - Resolve player follow and stop commands in the NPC's current world, matching coordinate movement even when cached spawn metadata is stale.
-- Fix coordinate movement by using a stationary, intangible server-side target with an explicit bounding box instead of an asset-dependent projectile marker. Resolve the NPC's current world from its entity store.
+- Use a stationary server-side target with an explicit bounding box instead of an asset-dependent projectile marker. Resolve the NPC's current world from its entity store.
 - Give explicit `move_to` commands their own `Move` behavior with a 1-block stopping distance, independent of the configured player follow distance and available idle/follow/wander presets.
 - Remove the false arrival shortcut for NPCs stuck within 5 blocks. Report success only within 1.5 blocks of the requested destination, with the actual position, remaining distance and arrival tolerance.
 - Verify movement state and target assignment, and report missing roles or lost markers explicitly instead of waiting for a misleading movement result.

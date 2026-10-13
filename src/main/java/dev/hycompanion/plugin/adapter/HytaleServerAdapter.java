@@ -1190,15 +1190,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 + "update the role for precise stopping distance");
                     }
 
-                    // Stationary coordinate source; the bounding box also supports legacy Follow roles.
-                    Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
-                    holder.putComponent(TransformComponent.getComponentType(), new TransformComponent(
-                            new Vector3d(location.x(), location.y(), location.z()), Rotation3f.ZERO));
-                    holder.ensureComponent(UUIDComponent.getComponentType());
-                    holder.putComponent(BoundingBox.getComponentType(),
-                            new BoundingBox(Box.horizontallyCentered(0.1, 0.1, 0.1)));
-                    holder.ensureComponent(Intangible.getComponentType());
-                    Ref<EntityStore> targetRef = store.addEntity(holder, AddReason.SPAWN);
+                    Ref<EntityStore> targetRef = store.addEntity(createMovementTarget(location), AddReason.SPAWN);
                     if (targetRef == null || !targetRef.isValid()) {
                         finishMovement(npcInstanceId, session, NpcMoveResult.failed("spawn_failed"));
                         return;
@@ -1237,6 +1229,20 @@ public class HytaleServerAdapter implements HytaleAPI {
             finishMovement(npcInstanceId, session, NpcMoveResult.failed("movement_setup_error"));
         }
         return session.result();
+    }
+
+    /** Build a stationary target that survives Hytale's NPC target validation. */
+    static Holder<EntityStore> createMovementTarget(Location location) {
+        Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
+        holder.putComponent(TransformComponent.getComponentType(), new TransformComponent(
+                new Vector3d(location.x(), location.y(), location.z()), Rotation3f.ZERO));
+        holder.ensureComponent(UUIDComponent.getComponentType());
+        // The bounding box also supports legacy Follow roles.
+        holder.putComponent(BoundingBox.getComponentType(),
+                new BoundingBox(Box.horizontallyCentered(0.1, 0.1, 0.1)));
+        // Intangible makes EntityDetectionUtil reject the marker; PreBehaviourTick clears LockedTarget.
+        // No model/network components are added, so this target remains server-only.
+        return holder;
     }
 
     private void startMovementMonitor(UUID npcInstanceId, NpcMovementSession<Ref<EntityStore>> session,
