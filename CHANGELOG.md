@@ -18,7 +18,7 @@
 - Reproduced rejection of the old movement marker with the official 0.7.0 `EntityDetectionUtil.isDetectableByNPCs` method and verified that the production marker factory passes the same rule. Tests also verify the destination, UUID and bounding box.
 - `mvn -o verify -Dsentry.skip=true` passed all 43 tests and rebuilt the Hytale plugin JAR. Tests cover target detectability, the official server's coordinate sensor parser and position provider, both affected NPC profiles, bounded path startup, cached and copied pack upgrades, custom settings and repeat startup.
 - Reviewed the official 0.7.0 source chain for state validation, state changes, marked targets, target position providers, combined sensors and Seek movement; the new extraction's JAR matches the installed Maven API and `libs/HytaleServer.jar`.
-- Live pathfinding and harvesting still require validation on the server.
+- Server logs from 2026-10-13 confirm coordinate arrival, block breaking and successful item pickup. The first pickup used the block ID instead of its dropped item ID; the backend correction addresses that separate gathering failure. Collection on the first request needs a retest with the updated backend.
 
 ## Migration work — 2026-10-12
 
