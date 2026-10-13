@@ -206,11 +206,23 @@ public class RoleGenerator {
                     state.addProperty("IgnoreMissingSetState", true);
                     changed = true;
                 }
+                if (new JsonPrimitive("Target").equals(state.get("Type"))
+                        && state.size() == 1
+                        && object.has("BodyMotion")
+                        && object.get("BodyMotion").isJsonObject()
+                        && new JsonPrimitive("Seek").equals(object.getAsJsonObject("BodyMotion").get("Type"))) {
+                    // Only upgrade our unconfigured generated target; preserve custom filters/ranges.
+                    state.addProperty("Type", "ReadPosition");
+                    state.addProperty("Slot", "LockedTarget");
+                    state.addProperty("UseMarkedTarget", true);
+                    state.addProperty("Range", Double.MAX_VALUE);
+                    changed = true;
+                }
             }
         }
         if (changed) {
             Files.writeString(roleFile, GSON.toJson(parsed));
-            logger.info("Updated externally controlled Move state in role: " + roleFile.getFileName());
+            logger.info("Updated coordinate movement behavior in role: " + roleFile.getFileName());
         }
     }
 
@@ -1024,7 +1036,12 @@ public class RoleGenerator {
         moveState.addProperty("IgnoreMissingSetState", true);
         moveSensors.add(moveState);
         JsonObject moveTarget = new JsonObject();
-        moveTarget.addProperty("Type", "Target");
+        // Seek needs a position here, rather than a live entity with movement/hitbox semantics.
+        moveTarget.addProperty("Type", "ReadPosition");
+        moveTarget.addProperty("Slot", "LockedTarget");
+        moveTarget.addProperty("UseMarkedTarget", true);
+        // Preserve the unbounded Target sensor's range; Seek owns its abort distance.
+        moveTarget.addProperty("Range", Double.MAX_VALUE);
         moveSensors.add(moveTarget);
         moveSensor.add("Sensors", moveSensors);
         moveInstruction.add("Sensor", moveSensor);

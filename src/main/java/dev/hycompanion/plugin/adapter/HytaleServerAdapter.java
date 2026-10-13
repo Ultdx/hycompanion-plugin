@@ -59,6 +59,7 @@ import com.hypixel.hytale.server.core.universe.world.PlaceBlockSettings;
 import com.hypixel.hytale.protocol.BlockMaterial;
 import com.hypixel.hytale.server.core.universe.world.storage.ChunkStore;
 import com.hypixel.hytale.server.npc.movement.controllers.MotionController;
+import com.hypixel.hytale.server.npc.movement.NavState;
 import dev.hycompanion.plugin.HycompanionEntrypoint;
 import dev.hycompanion.plugin.api.GamePlayer;
 import dev.hycompanion.plugin.api.HytaleAPI;
@@ -1189,7 +1190,7 @@ public class HytaleServerAdapter implements HytaleAPI {
                                 + "update the role for precise stopping distance");
                     }
 
-                    // Server-only stationary marker; Seek requires an explicit bounding box.
+                    // Stationary coordinate source; the bounding box also supports legacy Follow roles.
                     Holder<EntityStore> holder = EntityStore.REGISTRY.newHolder();
                     holder.putComponent(TransformComponent.getComponentType(), new TransformComponent(
                             new Vector3d(location.x(), location.y(), location.z()), Rotation3f.ZERO));
@@ -1271,8 +1272,12 @@ public class HytaleServerAdapter implements HytaleAPI {
                     Vector3d pos = transform.getPosition();
                     Location observed = Location.of(pos.x(), pos.y(), pos.z(), world.getName());
                     long now = System.nanoTime();
+                    NPCEntity npc = store.getComponent(entityRef, NPCEntity.getComponentType());
+                    var role = npc != null ? npc.getRole() : null;
+                    MotionController controller = role != null ? role.getActiveMotionController() : null;
+                    NavState navigation = controller != null ? controller.getNavState() : null;
                     NpcMovementProgress.Status status = progress.observe(observed,
-                            TimeUnit.NANOSECONDS.toMillis(now));
+                            TimeUnit.NANOSECONDS.toMillis(now), navigation == NavState.PROGRESSING);
                     if (status == NpcMovementProgress.Status.ARRIVED) {
                         logger.info("[Hycompanion] NPC arrived, distance=" + observed.distanceTo(destination));
                         finishMovementAndResetState(npcInstanceId, session, entityRef, store,
@@ -1281,7 +1286,11 @@ public class HytaleServerAdapter implements HytaleAPI {
                             || now - started >= TimeUnit.MINUTES.toNanos(5)) {
                         logger.info("[Hycompanion] NPC movement timed out, distance="
                                 + observed.distanceTo(destination) + ", state="
-                                + StateSupport.get(entityRef, store).getStateName());
+                                + StateSupport.get(entityRef, store).getStateName()
+                                + ", motion=" + (role != null ? role.getSteeringMotionName() : null)
+                                + ", navigation=" + navigation
+                                + ", targetLocked=" + marker.equals(MarkedEntitySupport.get(entityRef, store)
+                                        .getMarkedEntityRef(MarkedEntitySupport.DEFAULT_TARGET_SLOT)));
                         finishMovementAndResetState(npcInstanceId, session, entityRef, store,
                                 NpcMoveResult.timeout(observed));
                     }

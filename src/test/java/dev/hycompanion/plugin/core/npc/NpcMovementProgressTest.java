@@ -53,4 +53,29 @@ class NpcMovementProgressTest {
         assertEquals(MOVING, progress.observe(below, 0));
         assertEquals(STUCK, progress.observe(below, 3000));
     }
+
+    @Test
+    void pathComputationGetsABoundedStartupGrace() {
+        NpcMovementProgress progress = new NpcMovementProgress(Location.of(-679, 116, 53));
+        assertEquals(MOVING, progress.observe(STATIONARY, 0, true));
+        assertEquals(MOVING, progress.observe(STATIONARY, 3000, true));
+        assertEquals(MOVING, progress.observe(STATIONARY, 9999, true));
+        assertEquals(STUCK, progress.observe(STATIONARY, 10000, true));
+    }
+
+    @Test
+    void movementThatStartedStillTimesOutAfterThreeSecondsWithoutProgress() {
+        NpcMovementProgress progress = new NpcMovementProgress(Location.of(-679, 116, 53));
+        assertEquals(MOVING, progress.observe(STATIONARY, 0, true));
+        Location moved = STATIONARY.add(1, 0, 0);
+        assertEquals(MOVING, progress.observe(moved, 4000, true));
+        assertEquals(STUCK, progress.observe(moved, 7000, true));
+    }
+
+    @Test
+    void aBlockedPathDoesNotGetStartupGrace() {
+        NpcMovementProgress progress = new NpcMovementProgress(Location.of(-679, 116, 53));
+        assertEquals(MOVING, progress.observe(STATIONARY, 0, true));
+        assertEquals(STUCK, progress.observe(STATIONARY, 3000, false));
+    }
 }

@@ -5,6 +5,8 @@ import com.google.gson.JsonParser;
 import dev.hycompanion.plugin.utils.PluginLogger;
 import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
@@ -84,8 +86,13 @@ class RoleGeneratorTest {
 
         assertEquals(NpcMovementProgress.STATE, move.getAsJsonObject("Sensor")
                 .getAsJsonArray("Sensors").get(0).getAsJsonObject().get("State").getAsString());
-        assertEquals("Target", move.getAsJsonObject("Sensor")
-                .getAsJsonArray("Sensors").get(1).getAsJsonObject().get("Type").getAsString());
+        JsonObject coordinateSensor = move.getAsJsonObject("Sensor").getAsJsonArray("Sensors")
+                .get(1).getAsJsonObject();
+        assertEquals("ReadPosition", coordinateSensor.get("Type").getAsString());
+        assertEquals("LockedTarget", coordinateSensor.get("Slot").getAsString());
+        assertTrue(coordinateSensor.get("UseMarkedTarget").getAsBoolean());
+        assertEquals("Target", follow.getAsJsonObject("Sensor").getAsJsonArray("Sensors")
+                .get(0).getAsJsonObject().get("Type").getAsString());
         assertTrue(move.getAsJsonObject("BodyMotion").get("StopDistance").getAsDouble()
                 < NpcMovementProgress.ARRIVAL_DISTANCE);
         assertFalse(move.getAsJsonObject("BodyMotion").get("AdjustRangeByHitboxSize").getAsBoolean());
@@ -103,6 +110,30 @@ class RoleGeneratorTest {
         assertNotNull(instruction(role, "MoveBehavior"));
         assertNull(instruction(role, "FollowBehavior"));
         assertEquals("Idle", role.get("StartState").getAsString());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Slothian_Monk", "Skrill_Chick"})
+    void affectedNpcProfilesKeepPlayerFollowingAndUseCoordinateNavigation(String appearance) throws Exception {
+        RoleGenerator.NpcRoleData npc = companion(new String[] {"static", "follow"});
+        npc.roleType = "Variant";
+        npc.appearance = appearance;
+        npc.motionControllers = new org.json.JSONObject("""
+                {"Walk":{"type":"Walk","maxSpeed":5,"turnSpeed":180,"jumpHeight":1.2,"acceleration":25}}
+                """);
+        Path pack = directory.resolve("pack");
+        assertTrue(generator(pack).generateAndCacheRole(npc));
+        JsonObject role = readRole(pack);
+        assertEquals(appearance, role.get("Appearance").getAsString());
+        JsonObject controller = role.getAsJsonArray("MotionControllerList").get(0).getAsJsonObject();
+        assertEquals("Walk", controller.get("Type").getAsString());
+        assertEquals(5.0, controller.get("MaxWalkSpeed").getAsDouble());
+        JsonObject move = instruction(role, "MoveBehavior");
+        assertEquals("ReadPosition", move.getAsJsonObject("Sensor").getAsJsonArray("Sensors")
+                .get(1).getAsJsonObject().get("Type").getAsString());
+        JsonObject follow = instruction(role, "FollowBehavior");
+        assertEquals("Target", follow.getAsJsonObject("Sensor").getAsJsonArray("Sensors")
+                .get(0).getAsJsonObject().get("Type").getAsString());
     }
 
     private RoleGenerator.NpcRoleData companion(String[] presets) {

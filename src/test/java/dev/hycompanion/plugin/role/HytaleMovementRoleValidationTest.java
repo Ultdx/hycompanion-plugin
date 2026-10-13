@@ -3,7 +3,12 @@ package dev.hycompanion.plugin.role;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.hypixel.hytale.server.npc.asset.builder.StateMappingHelper;
+import com.hypixel.hytale.server.npc.asset.builder.BuilderSupport;
+import com.hypixel.hytale.server.npc.asset.builder.FeatureEvaluatorHelper;
 import com.hypixel.hytale.server.npc.corecomponents.statemachine.builders.BuilderSensorState;
+import com.hypixel.hytale.server.npc.corecomponents.world.SensorReadPosition;
+import com.hypixel.hytale.server.npc.corecomponents.world.builders.BuilderSensorReadPosition;
+import com.hypixel.hytale.server.npc.sensorinfo.EntityPositionProvider;
 import dev.hycompanion.plugin.core.npc.NpcMovementProgress;
 import dev.hycompanion.plugin.utils.PluginLogger;
 import org.junit.jupiter.api.Test;
@@ -38,6 +43,27 @@ class HytaleMovementRoleValidationTest {
                 Arguments.of(legacy, new String[] {"idle"}),
                 Arguments.of(legacy, new String[] {"idle", "follow"}),
                 Arguments.of(legacy, new String[] {"idle", "follow", "wander"})));
+    }
+
+    @ParameterizedTest
+    @MethodSource("roles")
+    void moveSensorUsesTheServersCoordinateProviderInsteadOfALiveEntityProvider(boolean legacy, String[] presets)
+            throws Exception {
+        generatedMoveSensor(legacy, presets);
+        JsonObject role = JsonParser.parseString(Files.readString(
+                directory.resolve("pack/Server/NPC/Roles/companion.json"))).getAsJsonObject();
+        JsonObject target = role.getAsJsonArray("Instructions").get(0).getAsJsonObject()
+                .getAsJsonObject("Sensor").getAsJsonArray("Sensors").get(1).getAsJsonObject();
+        List<String> errors = new ArrayList<>();
+        ServerPositionSensor builder = new ServerPositionSensor(errors);
+        builder.readConfig(target);
+        assertTrue(errors.isEmpty(), () -> String.join("\n", errors));
+        assertEquals("LockedTarget", target.get("Slot").getAsString());
+        assertTrue(builder.isUseMarkedTarget(null));
+        assertEquals(Double.MAX_VALUE, builder.getRange(null));
+        SensorReadPosition sensor = new SensorReadPosition(builder, null);
+        assertFalse(sensor.getSensorInfo() instanceof EntityPositionProvider);
+        assertNull(sensor.getSensorInfo().getPositionProvider().getTarget());
     }
 
     @Test
@@ -109,6 +135,50 @@ class HytaleMovementRoleValidationTest {
         assertEquals(oldRole, upgraded);
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void upgradesOldCoordinateTargetsInCachesAndCopiedPacks(boolean cached) throws Exception {
+        generatedMoveSensor(false, new String[] {"static", "follow"});
+        Path cache = directory.resolve("data/role_cache/companion.json");
+        Path asset = directory.resolve("pack/Server/NPC/Roles/companion.json");
+        JsonObject expected = JsonParser.parseString(Files.readString(asset)).getAsJsonObject();
+        expected.addProperty("Comment", "Keep server settings");
+        JsonObject old = expected.deepCopy();
+        JsonObject target = old.getAsJsonArray("Instructions").get(0).getAsJsonObject()
+                .getAsJsonObject("Sensor").getAsJsonArray("Sensors").get(1).getAsJsonObject();
+        target.entrySet().clear();
+        target.addProperty("Type", "Target");
+        Files.writeString(cached ? cache : asset, old.toString());
+        if (!cached) Files.delete(cache);
+
+        generator().loadCachedRoles();
+        assertEquals(expected, JsonParser.parseString(Files.readString(asset)));
+        if (cached) assertEquals(expected, JsonParser.parseString(Files.readString(cache)));
+        String firstLoad = Files.readString(asset);
+        generator().loadCachedRoles();
+        assertEquals(firstLoad, Files.readString(asset));
+    }
+
+    @Test
+    void preservesCustomTargetSettingsDuringCoordinateMigration() throws Exception {
+        generatedMoveSensor(false, new String[] {"idle", "follow"});
+        Path cache = directory.resolve("data/role_cache/companion.json");
+        Path asset = directory.resolve("pack/Server/NPC/Roles/companion.json");
+        JsonObject custom = JsonParser.parseString(Files.readString(cache)).getAsJsonObject();
+        JsonObject target = custom.getAsJsonArray("Instructions").get(0).getAsJsonObject()
+                .getAsJsonObject("Sensor").getAsJsonArray("Sensors").get(1).getAsJsonObject();
+        target.entrySet().clear();
+        target.addProperty("Type", "Target");
+        target.addProperty("Range", 120.0);
+        String content = custom.toString();
+        Files.writeString(cache, content);
+        Files.writeString(asset, content);
+
+        assertEquals(1, generator().loadCachedRoles());
+        assertEquals(content, Files.readString(cache));
+        assertEquals(content, Files.readString(asset));
+    }
+
     private RoleGenerator generator() {
         return new RoleGenerator(directory.resolve("pack"), directory.resolve("data"),
                 new PluginLogger("HytaleMovementRoleValidationTest"), "1.1.8", ">=0.7.0");
@@ -153,5 +223,26 @@ class HytaleMovementRoleValidationTest {
             readErrors = errors;
             owner = this;
         }
+    }
+
+    // Parse the actual server schema; only replace slot lookup, which normally needs a full NPC builder.
+    private static final class ServerPositionSensor extends BuilderSensorReadPosition {
+        private ServerPositionSensor(List<String> errors) {
+            readErrors = errors;
+            owner = this;
+            evaluatorHelper = new FeatureEvaluatorHelper();
+        }
+
+        @Override
+        public int getSlot(BuilderSupport support) { return 0; }
+
+        @Override
+        public boolean isUseMarkedTarget(BuilderSupport support) { return useMarkedTarget.get(null); }
+
+        @Override
+        public double getRange(BuilderSupport support) { return range.get(null); }
+
+        @Override
+        public double getMinRange(BuilderSupport support) { return minRange.get(null); }
     }
 }

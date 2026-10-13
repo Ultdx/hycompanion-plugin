@@ -4,13 +4,17 @@
 
 ### Fixed
 
+- Feed coordinate `move_to` targets through Hytale's native `ReadPosition` sensor, avoiding the live-entity movement requirements of a stationary marker. Keep player following on its existing `Target` sensor.
+- Upgrade unconfigured generated `MoveBehavior` targets in cached roles and copied asset packs before loading. Preserve custom target settings and other role data.
+- Allow up to 10 seconds for initial path computation while the engine reports `PROGRESSING`; retain the 3-second stall timeout after movement starts or when navigation is not progressing.
+- Include the selected steering motion, navigation state and target lock in movement timeout logs.
 - Declare the externally controlled `Move` state with `IgnoreMissingSetState`, fixing Hytale's "State sensor or State setter action/motion exists without accompanying state/setter: Move" validation error introduced by the coordinate movement update.
 - Repair existing generated `MoveBehavior` roles in the asset pack and cache during setup, before NPC asset validation, including copied packs and offline starts. Preserve other role settings and custom instructions.
 
 ### Validation
 
 - Reproduced the reported error using the official 0.7.0 `BuilderSensorState` and `StateMappingHelper`, then verified the corrected sensor across standalone and legacy roles with idle, follow and wander presets.
-- `mvn -o verify -Dsentry.skip=true` passed all 27 tests and rebuilt the Hytale plugin JAR. Tests also cover cached and copied pack upgrades, preserving settings and repeat startup.
+- `mvn -o verify -Dsentry.skip=true` passed all 41 tests and rebuilt the Hytale plugin JAR. Tests cover the official server's coordinate sensor parser and position provider, both affected NPC profiles, bounded path startup, cached and copied pack upgrades, custom settings and repeat startup.
 - Reviewed the official 0.7.0 source chain for state validation, state changes, marked targets, target position providers, combined sensors and Seek movement; the new extraction's JAR matches the installed Maven API and `libs/HytaleServer.jar`.
 - Live pathfinding and harvesting still require validation on the server.
 
